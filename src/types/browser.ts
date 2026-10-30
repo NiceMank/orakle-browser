@@ -12,6 +12,12 @@ export interface Tab {
   isAudioPlaying: boolean;
   zoomFactor: number;
   securityState: 'secure' | 'insecure' | 'internal';
+  /** Espace de travail auquel l'onglet appartient */
+  spaceId: string;
+  /** Onglet dupliqué / mis en pause */
+  isSuspended?: boolean;
+  /** Date de dernière activation (tri de la barre d'onglets) */
+  lastActiveAt?: number;
 }
 
 export interface BookmarkItem {
@@ -38,9 +44,19 @@ export interface SpeedDialItem {
 }
 
 export type ThemeMode = 'dark' | 'light';
-export type AccentColor = 'orakle' | 'cyber' | 'emerald' | 'amber' | 'rose';
-export type SearchEngineId = 'duckduckgo' | 'brave' | 'google' | 'qwant' | 'startpage';
+export type AccentColor =
+  | 'orakle'
+  | 'cyber'
+  | 'emerald'
+  | 'amber'
+  | 'rose'
+  | 'ice'
+  | 'graphite';
+export type SearchEngineId = 'duckduckgo' | 'brave' | 'google' | 'qwant' | 'startpage' | 'perplexity';
 export type LayoutMode = 'horizontal' | 'vertical';
+export type GlassDensity = 'thin' | 'regular' | 'thick';
+export type MotionMode = 'full' | 'calm';
+export type AiProvider = 'pollinations' | 'openai-compatible' | 'offline';
 
 export interface BrowserSettings {
   theme: ThemeMode;
@@ -53,6 +69,28 @@ export interface BrowserSettings {
   sendDoNotTrack: boolean;
   userAgentProfile: string;
   homeUrl: string;
+
+  /* --- Apparence Aurora (v1.1) --- */
+  glassDensity: GlassDensity;
+  motionMode: MotionMode;
+  showAurora: boolean;
+  showNoise: boolean;
+  showGrid: boolean;
+  compactTabsBar: boolean;
+  reduceTransparency: boolean;
+
+  /* --- Lecture & confort --- */
+  readerFontSize: number;
+  readerTheme: 'paper' | 'sepia' | 'night';
+
+  /* --- Assistant Orakle --- */
+  aiProvider: AiProvider;
+  aiEndpoint: string;
+  aiModel: string;
+  aiAutoSummarize: boolean;
+
+  /* --- Focus & bien-être --- */
+  focusBlockList: string[];
 }
 
 export interface BlockedEntry {
@@ -94,6 +132,23 @@ export interface SecurityAuditResult {
   }[];
 }
 
+/** Mesures de performance réseau (Orakle Pulse) */
+export interface NetworkTimingResult {
+  url: string;
+  ok: boolean;
+  statusCode: number;
+  totalMs: number;
+  dnsMs: number;
+  connectMs: number;
+  tlsMs: number;
+  firstByteMs: number;
+  contentLength: number;
+  server: string;
+  protocol: string;
+  cached: boolean;
+  error?: string;
+}
+
 export interface DownloadItemInfo {
   id: string;
   filename: string;
@@ -105,6 +160,53 @@ export interface DownloadItemInfo {
   startedAt: number;
 }
 
+/** Espace de travail (Workspace / Space) — séparation des contextes */
+export interface Space {
+  id: string;
+  name: string;
+  emoji: string;
+  color: string;
+  createdAt: number;
+}
+
+/** Session enregistrée (Snapshot de travail) */
+export interface SavedSession {
+  id: string;
+  name: string;
+  emoji: string;
+  tabs: { title: string; url: string }[];
+  createdAt: number;
+}
+
+/** Résultat d'extraction du mode Lecture */
+export interface ReaderArticle {
+  url: string;
+  title: string;
+  byline: string;
+  siteName: string;
+  excerpt: string;
+  html: string;
+  textContent: string;
+  length: number;
+  readingMinutes: number;
+}
+
+/** Cookie inspecté */
+export interface CookieInfo {
+  name: string;
+  value: string;
+  domain: string;
+  path: string;
+  secure: boolean;
+  httpOnly: boolean;
+  session: boolean;
+  sameSite: string;
+  expires: number;
+  size: number;
+  /** Classification privacy */
+  risk: 'ok' | 'tracker' | 'third-party';
+}
+
 export interface PersistedData {
   settings: BrowserSettings;
   bookmarks: BookmarkItem[];
@@ -112,9 +214,20 @@ export interface PersistedData {
   speedDials: SpeedDialItem[];
   scratchpad: string;
   whitelistedHosts: string[];
+  spaces: Space[];
+  sessions: SavedSession[];
 }
 
-export type SidePanelTab = 'bookmarks' | 'history' | 'downloads' | 'notes' | 'settings' | null;
+export type SidePanelTab =
+  | 'bookmarks'
+  | 'history'
+  | 'downloads'
+  | 'notes'
+  | 'settings'
+  | 'privacy'
+  | 'pulse'
+  | 'spaces'
+  | null;
 
 declare global {
   interface Window {
@@ -136,6 +249,9 @@ declare global {
         removeHistoryItem: (id: string) => Promise<HistoryItem[]>;
         updateSpeedDials: (dials: SpeedDialItem[]) => Promise<SpeedDialItem[]>;
         updateScratchpad: (content: string) => Promise<string>;
+        saveSpaces: (spaces: Space[]) => Promise<Space[]>;
+        saveSession: (session: { name: string; emoji: string; tabs: { title: string; url: string }[] }) => Promise<SavedSession[]>;
+        deleteSession: (id: string) => Promise<SavedSession[]>;
       };
       shield: {
         getStats: () => Promise<ShieldStats>;
@@ -145,12 +261,24 @@ declare global {
       security: {
         auditUrl: (url: string) => Promise<SecurityAuditResult>;
         clearBrowsingData: () => Promise<boolean>;
+        clearData: (types: string[]) => Promise<boolean>;
       };
       downloads: {
         getAll: () => Promise<DownloadItemInfo[]>;
         showInFolder: (savePath: string) => Promise<void>;
         openFile: (savePath: string) => Promise<void>;
         onUpdated: (cb: (list: DownloadItemInfo[]) => void) => () => void;
+      };
+      reader: {
+        extract: (url: string) => Promise<ReaderArticle | null>;
+        summarize: (text: string) => Promise<{ summary: string; engine: string }>;
+      };
+      network: {
+        probe: (url: string) => Promise<NetworkTimingResult>;
+      };
+      privacy: {
+        cookies: (partition?: string) => Promise<CookieInfo[]>;
+        clearCookies: (domain: string, partition?: string) => Promise<boolean>;
       };
       tabs: {
         onOpenFromMain: (

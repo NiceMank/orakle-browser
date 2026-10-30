@@ -7,10 +7,13 @@ import {
   shell,
   clipboard,
   net,
+  webContents,
 } from 'electron';
 import path from 'node:path';
 import { OrakleShield } from './shield';
 import { StorageManager, BrowserSettings } from './storage';
+import { READER_EXTRACTOR, ReaderArticle } from './reader';
+import { probeUrl, summarizeText } from './network';
 
 // Handle Linux sandbox environments safely
 app.commandLine.appendSwitch('enable-features', 'OverlayScrollbar,SmoothScrolling');
@@ -252,6 +255,17 @@ app.on('web-contents-created', (_event, contents) => {
   }
 });
 
+/** Retrouve le <webContents> d'un invité (webview) à partir de son URL */
+function webContentsForUrl(url: string): Electron.WebContents | null {
+  const all = webContents.getAllWebContents();
+  const matches = all.filter(
+    (wc) => wc.getType() === 'webview' && !wc.isDestroyed() && wc.getURL() === url
+  );
+  if (matches.length > 0) return matches[matches.length - 1];
+  const fallback = all.filter((wc) => wc.getType() === 'webview' && !wc.isDestroyed());
+  return fallback.length > 0 ? fallback[fallback.length - 1] : null;
+}
+
 async function auditSecurityHeaders(targetUrl: string): Promise<SecurityAuditResult> {
   return new Promise((resolve) => {
     try {
@@ -445,7 +459,8 @@ app.whenReady().then(() => {
   // IPC Handlers — State & Storage
   ipcMain.handle('storage:get-all', () => storage.getAll());
   ipcMain.handle('storage:update-settings', (_e, patch: Partial<BrowserSettings>) => {
-    const updated = storage.updateSettings(patch);
+    const current = storage.getAll().settings;
+    const updated = storage.updateSettings({ ...current, ...patch });
     shield.updateConfig({
       enabled: updated.shieldEnabled,
       stripTrackingParams: updated.stripTrackingParams,
@@ -461,6 +476,90 @@ app.whenReady().then(() => {
   ipcMain.handle('storage:remove-history-item', (_e, id: string) => storage.removeHistoryItem(id));
   ipcMain.handle('storage:update-speed-dials', (_e, dials) => storage.updateSpeedDials(dials));
   ipcMain.handle('storage:update-scratchpad', (_e, content: string) => storage.updateScratchpad(content));
+  ipcMain.handle('storage:save-spaces', (_e, spaces) => storage.saveSpaces(spaces));
+  ipcMain.handle('storage:save-session', (_e, session) => storage.saveSession(session));
+  ipcMain.handle('storage:delete-session', (_e, id: string) => storage.deleteSession(id));
+
+  // IPC Handlers — Orakle Reader (extraction d'article lisible)
+  ipcMain.handle('reader:extract', async (_e, url: string) => {
+    try {
+      const target = webContentsForUrl(url);
+      if (!target) return null;
+      const article = (await target.executeJavaScript(READER_EXTRACTOR, true)) as ReaderArticle | null;
+      return article;
+    } catch (err) {
+      console.error('[Orakle Reader] extraction failed:', err);
+      return null;
+    }
+  });
+  ipcMain.handle('reader:summarize', async (_e, text: string) => {
+    const settings = storage.getAll().settings;
+    return summarizeText(text, {
+      provider: settings.aiProvider,
+      endpoint: settings.aiEndpoint,
+      model: settings.aiModel,
+    });
+  });
+
+  // IPC Handlers — Orakle Pulse (perf réseau)
+  ipcMain.handle('network:probe', (_e, url: string) => probeUrl(url));
+
+  // IPC Handlers — Inspecteur de cookies / stockage
+  ipcMain.handle('privacy:cookies', async (_e, partition = 'persist:orakle') => {
+    const ses = session.fromPartition(partition);
+    const cookies = await ses.cookies.get({});
+    return cookies.map((c) => {
+      const domain = c.domain || '';
+      const thirdPartyHint = /doubleclick|facebook|google-analytics|googletagmanager|hotjar|segment|mixpanel|tiktok|scorecard|adsrvr|taboola|outbrain/i.test(
+        domain
+      );
+      return {
+        name: c.name,
+        value: c.value,
+        domain,
+        path: c.path || '/',
+        secure: Boolean(c.secure),
+        httpOnly: Boolean(c.httpOnly),
+        session: Boolean(c.session),
+        sameSite: c.sameSite || 'unspecified',
+        expires: c.expirationDate ? Math.round(c.expirationDate * 1000) : 0,
+        size: (c.name?.length || 0) + (c.value?.length || 0),
+        risk: thirdPartyHint ? 'tracker' : c.session ? 'ok' : 'third-party',
+      };
+    });
+  });
+  ipcMain.handle('privacy:clear-cookies', async (_e, domain: string, partition = 'persist:orakle') => {
+    const ses = session.fromPartition(partition);
+    const cookies = await ses.cookies.get({ domain });
+    await Promise.all(
+      cookies.map((c) => {
+        const host = (c.domain || domain).replace(/^\./, '');
+        return ses.cookies.remove(
+          `${c.secure ? 'https' : 'http'}://${host}${c.path || '/'}`,
+          c.name || ''
+        );
+      })
+    );
+    return true;
+  });
+  ipcMain.handle('privacy:clear-data', async (_e, types: string[]) => {
+    const ses = session.fromPartition('persist:orakle');
+    const incognito = session.fromPartition('orakle-incognito');
+    if (types.includes('cache')) {
+      await ses.clearCache();
+      await incognito.clearCache();
+    }
+    const storages = types.filter((t) =>
+      ['cookies', 'localstorage', 'indexdb', 'serviceworkers', 'cachestorage', 'shadercache'].includes(t)
+    );
+    if (storages.length > 0) {
+      await ses.clearStorageData({ storages: storages as Electron.ClearStorageDataOptions['storages'] });
+    }
+    if (types.includes('cookies')) {
+      await ses.clearHostResolverCache();
+    }
+    return true;
+  });
 
   // IPC Handlers — Shield & Security
   ipcMain.handle('shield:get-stats', () => shield.getStats());

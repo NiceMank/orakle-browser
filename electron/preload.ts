@@ -23,6 +23,10 @@ contextBridge.exposeInMainWorld('orakle', {
     removeHistoryItem: (id: string) => ipcRenderer.invoke('storage:remove-history-item', id),
     updateSpeedDials: (dials: unknown[]) => ipcRenderer.invoke('storage:update-speed-dials', dials),
     updateScratchpad: (content: string) => ipcRenderer.invoke('storage:update-scratchpad', content),
+    saveSpaces: (spaces: unknown[]) => ipcRenderer.invoke('storage:save-spaces', spaces),
+    saveSession: (session: { name: string; emoji: string; tabs: { title: string; url: string }[] }) =>
+      ipcRenderer.invoke('storage:save-session', session),
+    deleteSession: (id: string) => ipcRenderer.invoke('storage:delete-session', id),
   },
   shield: {
     getStats: () => ipcRenderer.invoke('shield:get-stats'),
@@ -36,6 +40,7 @@ contextBridge.exposeInMainWorld('orakle', {
   security: {
     auditUrl: (url: string) => ipcRenderer.invoke('security:audit-url', url),
     clearBrowsingData: () => ipcRenderer.invoke('privacy:clear-browsing-data'),
+    clearData: (types: string[]) => ipcRenderer.invoke('privacy:clear-data', types),
   },
   downloads: {
     getAll: () => ipcRenderer.invoke('downloads:get-all'),
@@ -46,6 +51,18 @@ contextBridge.exposeInMainWorld('orakle', {
       ipcRenderer.on('downloads:updated', listener);
       return () => ipcRenderer.removeListener('downloads:updated', listener);
     },
+  },
+  reader: {
+    extract: (url: string) => ipcRenderer.invoke('reader:extract', url),
+    summarize: (text: string) => ipcRenderer.invoke('reader:summarize', text),
+  },
+  network: {
+    probe: (url: string) => ipcRenderer.invoke('network:probe', url),
+  },
+  privacy: {
+    cookies: (partition?: string) => ipcRenderer.invoke('privacy:cookies', partition),
+    clearCookies: (domain: string, partition?: string) =>
+      ipcRenderer.invoke('privacy:clear-cookies', domain, partition),
   },
   tabs: {
     onOpenFromMain: (

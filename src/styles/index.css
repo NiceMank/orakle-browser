@@ -1,0 +1,238 @@
+@import "tailwindcss";
+
+/* ============================================================
+   Orakle Browser — Design System iOS / Arc Glassmorphism
+   Hérité du socle de qualité Easy Learn :
+   Jetons 3-couches (Primitive -> Semantic -> Component),
+   Nappe d'ambiance dynamique color-mix, micro-interactions iOS.
+   ============================================================ */
+
+:root {
+  --radius-xs: 8px;
+  --radius-s: 12px;
+  --radius-m: 18px;
+  --radius-l: 24px;
+  --radius-xl: 32px;
+  --ease-ios: cubic-bezier(0.32, 0.72, 0, 1);
+  --ease-spring: cubic-bezier(0.34, 1.4, 0.64, 1);
+  --speed: 0.24s;
+
+  /* Palettes d'accents Orakle */
+  --c-orakle: #0a84ff;
+  --c-cyber: #8b5cf6;
+  --c-emerald: #10b981;
+  --c-amber: #f59e0b;
+  --c-rose: #ec4899;
+
+  --ok: #30d158;
+  --warn: #ff9f0a;
+  --danger: #ff453a;
+
+  --accent: var(--c-orakle);
+  --accent-soft: rgba(10, 132, 255, 0.15);
+  --accent-glow: rgba(10, 132, 255, 0.32);
+}
+
+body[data-accent="orakle"] {
+  --accent: #0a84ff;
+  --accent-soft: rgba(10, 132, 255, 0.15);
+  --accent-glow: rgba(10, 132, 255, 0.34);
+}
+body[data-accent="cyber"] {
+  --accent: #8b5cf6;
+  --accent-soft: rgba(139, 92, 246, 0.16);
+  --accent-glow: rgba(139, 92, 246, 0.35);
+}
+body[data-accent="emerald"] {
+  --accent: #10b981;
+  --accent-soft: rgba(16, 185, 129, 0.15);
+  --accent-glow: rgba(16, 185, 129, 0.34);
+}
+body[data-accent="amber"] {
+  --accent: #f59e0b;
+  --accent-soft: rgba(245, 158, 11, 0.16);
+  --accent-glow: rgba(245, 158, 11, 0.34);
+}
+body[data-accent="rose"] {
+  --accent: #ec4899;
+  --accent-soft: rgba(236, 72, 153, 0.16);
+  --accent-glow: rgba(236, 72, 153, 0.34);
+}
+
+/* ---------- Thème Sombre (Par défaut) ---------- */
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-base: #08090f;
+  --bg: color-mix(in srgb, var(--accent) 7%, #08090f);
+  --bg-elev: color-mix(in srgb, var(--accent) 5%, #13151f);
+  --bg-glass: rgba(20, 22, 32, 0.76);
+  --bg-glass-strong: rgba(24, 27, 38, 0.92);
+  --fill: rgba(255, 255, 255, 0.055);
+  --fill-strong: rgba(255, 255, 255, 0.1);
+  --fill-hover: rgba(255, 255, 255, 0.12);
+  --stroke: rgba(255, 255, 255, 0.085);
+  --stroke-strong: rgba(255, 255, 255, 0.15);
+  --text: #f5f5f7;
+  --text-2: #9ca3af;
+  --text-3: #646977;
+  --shadow-card: 0 2px 6px rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.45);
+  --shadow-float: 0 8px 30px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.09);
+}
+
+/* ---------- Thème Clair ---------- */
+html[data-theme="light"] {
+  color-scheme: light;
+  --bg-base: #f2f3f8;
+  --bg: color-mix(in srgb, var(--accent) 4%, #f2f3f8);
+  --bg-elev: color-mix(in srgb, var(--accent) 2%, #ffffff);
+  --bg-glass: rgba(255, 255, 255, 0.78);
+  --bg-glass-strong: rgba(255, 255, 255, 0.94);
+  --fill: rgba(0, 0, 0, 0.045);
+  --fill-strong: rgba(0, 0, 0, 0.08);
+  --fill-hover: rgba(0, 0, 0, 0.09);
+  --stroke: rgba(0, 0, 0, 0.08);
+  --stroke-strong: rgba(0, 0, 0, 0.14);
+  --text: #14151a;
+  --text-2: #525866;
+  --text-3: #8e95a5;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.05), 0 10px 26px rgba(0, 0, 0, 0.07);
+  --shadow-float: 0 10px 36px rgba(0, 0, 0, 0.14), 0 0 0 1px rgba(0, 0, 0, 0.08);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Inter", "Segoe UI", Roboto, sans-serif;
+  background-color: var(--bg);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Région de déplacement de la fenêtre Electron */
+.app-drag {
+  -webkit-app-region: drag;
+}
+
+.app-no-drag {
+  -webkit-app-region: no-drag;
+}
+
+/* Surfaces Glassmorphism */
+.glass-panel {
+  background: var(--bg-glass);
+  backdrop-filter: blur(22px) saturate(180%);
+  -webkit-backdrop-filter: blur(22px) saturate(180%);
+  border: 1px solid var(--stroke);
+}
+
+.glass-panel-strong {
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(28px) saturate(190%);
+  -webkit-backdrop-filter: blur(28px) saturate(190%);
+  border: 1px solid var(--stroke-strong);
+  box-shadow: var(--shadow-float);
+}
+
+.orakle-card {
+  background: var(--bg-elev);
+  border: 1px solid var(--stroke);
+  border-radius: var(--radius-m);
+  box-shadow: var(--shadow-card);
+  transition: transform var(--speed) var(--ease-ios), border-color var(--speed) var(--ease-ios), box-shadow var(--speed) var(--ease-ios);
+}
+
+.orakle-card:hover {
+  border-color: color-mix(in srgb, var(--accent) 42%, var(--stroke));
+}
+
+/* Boutons interactifs accessibles */
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: var(--text-2);
+  background: transparent;
+  border: 1px solid transparent;
+  transition: all 0.18s var(--ease-ios);
+  cursor: pointer;
+}
+
+.icon-btn:hover:not(:disabled) {
+  color: var(--text);
+  background: var(--fill-hover);
+}
+
+.icon-btn:active:not(:disabled) {
+  transform: scale(0.94);
+}
+
+.icon-btn:disabled {
+  opacity: 0.32;
+  cursor: not-allowed;
+}
+
+.icon-btn:focus-visible,
+button:focus-visible,
+input:focus-visible,
+select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Barre de progression de chargement en haut du viewport */
+@keyframes loadingPulse {
+  0% {
+    transform: translateX(-100%);
+  }
+  50% {
+    transform: translateX(0%);
+  }
+  100% {
+    transform: translateX(100%);
+  }
+}
+
+.loading-bar-indeterminate {
+  animation: loadingPulse 1.35s infinite var(--ease-ios);
+}
+
+/* Scrollbar discrète */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--fill-strong);
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-3);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

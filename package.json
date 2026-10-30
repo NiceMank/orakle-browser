@@ -1,0 +1,32 @@
+{
+  "name": "orakle-browser",
+  "productName": "Orakle Browser",
+  "version": "1.0.0",
+  "description": "Navigateur Web moderne, rapide et sécurisé avec bouclier anti-pistage natif (Orakle Shield), écran scindé et interface Glassmorphism iOS/Arc.",
+  "main": "dist-electron/main.js",
+  "private": true,
+  "scripts": {
+    "dev:vite": "vite --port 5188 --strictPort",
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "dev": "npm run build:electron && node scripts/dev.mjs",
+    "build": "npm run build:electron && vite build",
+    "start": "npm run build && electron . --no-sandbox",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit"
+  },
+  "dependencies": {
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.0.0",
+    "@types/node": "^22.10.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "electron": "^33.2.1",
+    "tailwindcss": "^4.0.0",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.3"
+  }
+}

@@ -25,10 +25,26 @@ export interface SpeedDialItem {
   badge: string;
 }
 
+export interface Space {
+  id: string;
+  name: string;
+  emoji: string;
+  color: string;
+  createdAt: number;
+}
+
+export interface SavedSession {
+  id: string;
+  name: string;
+  emoji: string;
+  tabs: { title: string; url: string }[];
+  createdAt: number;
+}
+
 export interface BrowserSettings {
   theme: 'dark' | 'light';
-  accent: 'orakle' | 'cyber' | 'emerald' | 'amber' | 'rose';
-  searchEngine: 'duckduckgo' | 'brave' | 'google' | 'qwant' | 'startpage';
+  accent: 'orakle' | 'cyber' | 'emerald' | 'amber' | 'rose' | 'ice' | 'graphite';
+  searchEngine: 'duckduckgo' | 'brave' | 'google' | 'qwant' | 'startpage' | 'perplexity';
   layoutMode: 'horizontal' | 'vertical';
   showBookmarksBar: boolean;
   shieldEnabled: boolean;
@@ -36,6 +52,20 @@ export interface BrowserSettings {
   sendDoNotTrack: boolean;
   userAgentProfile: string;
   homeUrl: string;
+  glassDensity: 'thin' | 'regular' | 'thick';
+  motionMode: 'full' | 'calm';
+  showAurora: boolean;
+  showNoise: boolean;
+  showGrid: boolean;
+  compactTabsBar: boolean;
+  reduceTransparency: boolean;
+  readerFontSize: number;
+  readerTheme: 'paper' | 'sepia' | 'night';
+  aiProvider: 'pollinations' | 'openai-compatible' | 'offline';
+  aiEndpoint: string;
+  aiModel: string;
+  aiAutoSummarize: boolean;
+  focusBlockList: string[];
 }
 
 export interface PersistedData {
@@ -45,7 +75,15 @@ export interface PersistedData {
   speedDials: SpeedDialItem[];
   scratchpad: string;
   whitelistedHosts: string[];
+  spaces: Space[];
+  sessions: SavedSession[];
 }
+
+const DEFAULT_SPACES: Space[] = [
+  { id: 'space-perso', name: 'Personnel', emoji: '🌙', color: '#0a84ff', createdAt: Date.now() },
+  { id: 'space-work', name: 'Travail', emoji: '💼', color: '#8b5cf6', createdAt: Date.now() },
+  { id: 'space-veille', name: 'Veille', emoji: '🛰️', color: '#10b981', createdAt: Date.now() },
+];
 
 const DEFAULT_DATA: PersistedData = {
   settings: {
@@ -59,6 +97,20 @@ const DEFAULT_DATA: PersistedData = {
     sendDoNotTrack: true,
     userAgentProfile: 'standard',
     homeUrl: 'orakle://newtab',
+    glassDensity: 'regular',
+    motionMode: 'full',
+    showAurora: true,
+    showNoise: true,
+    showGrid: false,
+    compactTabsBar: false,
+    reduceTransparency: false,
+    readerFontSize: 17,
+    readerTheme: 'paper',
+    aiProvider: 'pollinations',
+    aiEndpoint: 'https://api.openai.com/v1/chat/completions',
+    aiModel: 'openai',
+    aiAutoSummarize: false,
+    focusBlockList: ['x.com', 'twitter.com', 'instagram.com', 'tiktok.com', 'reddit.com'],
   },
   bookmarks: [
     {
@@ -106,65 +158,28 @@ const DEFAULT_DATA: PersistedData = {
   ],
   history: [],
   speedDials: [
-    {
-      id: 'sd-1',
-      title: 'DuckDuckGo',
-      url: 'https://duckduckgo.com',
-      color: '#de5833',
-      badge: 'DDG',
-    },
-    {
-      id: 'sd-2',
-      title: 'GitHub',
-      url: 'https://github.com',
-      color: '#6e5494',
-      badge: 'GH',
-    },
-    {
-      id: 'sd-3',
-      title: 'YouTube',
-      url: 'https://www.youtube.com',
-      color: '#ff0033',
-      badge: 'YT',
-    },
-    {
-      id: 'sd-4',
-      title: 'MDN Docs',
-      url: 'https://developer.mozilla.org/fr/',
-      color: '#0a84ff',
-      badge: 'MDN',
-    },
-    {
-      id: 'sd-5',
-      title: 'Hacker News',
-      url: 'https://news.ycombinator.com',
-      color: '#ff6600',
-      badge: 'HN',
-    },
-    {
-      id: 'sd-6',
-      title: 'Wikipédia',
-      url: 'https://fr.wikipedia.org',
-      color: '#38bdf8',
-      badge: 'WIKI',
-    },
-    {
-      id: 'sd-7',
-      title: 'OWASP Foundation',
-      url: 'https://owasp.org',
-      color: '#10b981',
-      badge: 'SEC',
-    },
-    {
-      id: 'sd-8',
-      title: 'Reddit',
-      url: 'https://www.reddit.com',
-      color: '#ff4500',
-      badge: 'RD',
-    },
+    { id: 'sd-1', title: 'DuckDuckGo', url: 'https://duckduckgo.com', color: '#de5833', badge: 'DDG' },
+    { id: 'sd-2', title: 'GitHub', url: 'https://github.com', color: '#6e5494', badge: 'GH' },
+    { id: 'sd-3', title: 'YouTube', url: 'https://www.youtube.com', color: '#ff0033', badge: 'YT' },
+    { id: 'sd-4', title: 'MDN Docs', url: 'https://developer.mozilla.org/fr/', color: '#0a84ff', badge: 'MDN' },
+    { id: 'sd-5', title: 'Hacker News', url: 'https://news.ycombinator.com', color: '#ff6600', badge: 'HN' },
+    { id: 'sd-6', title: 'Wikipédia', url: 'https://fr.wikipedia.org', color: '#38bdf8', badge: 'WIKI' },
+    { id: 'sd-7', title: 'OWASP Foundation', url: 'https://owasp.org', color: '#10b981', badge: 'SEC' },
+    { id: 'sd-8', title: 'Reddit', url: 'https://www.reddit.com', color: '#ff4500', badge: 'RD' },
   ],
-  scratchpad: `# Notes Rapides Orakle\n\n- Ctrl+T : Nouvel onglet\n- Ctrl+Shift+N : Onglet privé (Fantôme)\n- Ctrl+K : Palette de commandes\n- Ctrl+B : Afficher/Masquer le panneau latéral\n- Ctrl+\\ : Activer l'écran scindé (Split View)\n`,
+  scratchpad: `# Notes Rapides Orakle
+
+- Ctrl+T : Nouvel onglet
+- Ctrl+Shift+N : Onglet privé (Fantôme)
+- Ctrl+K : Palette de commandes
+- Ctrl+B : Favoris · Cmd+Shift+S : Espaces
+- Ctrl+\\ : Écran scindé (Split View)
+- Ctrl+Shift+R : Mode Lecture épuré
+- Ctrl+Shift+P : Orakle Pulse (perf réseau)
+`,
   whitelistedHosts: [],
+  spaces: DEFAULT_SPACES,
+  sessions: [],
 };
 
 export class StorageManager {
@@ -187,8 +202,14 @@ export class StorageManager {
           bookmarks: Array.isArray(parsed.bookmarks) ? parsed.bookmarks : DEFAULT_DATA.bookmarks,
           history: Array.isArray(parsed.history) ? parsed.history : [],
           speedDials: Array.isArray(parsed.speedDials) ? parsed.speedDials : DEFAULT_DATA.speedDials,
-          scratchpad: typeof parsed.scratchpad === 'string' ? parsed.scratchpad : DEFAULT_DATA.scratchpad,
+          scratchpad:
+            typeof parsed.scratchpad === 'string' ? parsed.scratchpad : DEFAULT_DATA.scratchpad,
           whitelistedHosts: Array.isArray(parsed.whitelistedHosts) ? parsed.whitelistedHosts : [],
+          spaces:
+            Array.isArray(parsed.spaces) && parsed.spaces.length > 0
+              ? parsed.spaces
+              : DEFAULT_SPACES,
+          sessions: Array.isArray(parsed.sessions) ? parsed.sessions : [],
         };
       }
     } catch (err) {
@@ -249,7 +270,6 @@ export class StorageManager {
     if (!entry.url || entry.url.startsWith('orakle://') || entry.url === 'about:blank') {
       return this.data.history;
     }
-    // Avoid consecutive duplicate entries
     if (this.data.history[0]?.url === entry.url) {
       this.data.history[0].title = entry.title || this.data.history[0].title;
       this.data.history[0].visitedAt = Date.now();
@@ -294,5 +314,32 @@ export class StorageManager {
   public setWhitelistedHosts(hosts: string[]) {
     this.data.whitelistedHosts = hosts;
     this.save();
+  }
+
+  /* ---------- Espaces & Sessions (v1.1) ---------- */
+
+  public saveSpaces(spaces: Space[]): Space[] {
+    this.data.spaces = spaces;
+    this.save();
+    return this.data.spaces;
+  }
+
+  public saveSession(session: Omit<SavedSession, 'id' | 'createdAt'>): SavedSession[] {
+    const item: SavedSession = {
+      id: `sess-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      name: session.name,
+      emoji: session.emoji || '🗂️',
+      tabs: session.tabs.filter((t) => t.url && !t.url.startsWith('orakle://')),
+      createdAt: Date.now(),
+    };
+    this.data.sessions = [item, ...this.data.sessions].slice(0, 30);
+    this.save();
+    return this.data.sessions;
+  }
+
+  public deleteSession(id: string): SavedSession[] {
+    this.data.sessions = this.data.sessions.filter((s) => s.id !== id);
+    this.save();
+    return this.data.sessions;
   }
 }

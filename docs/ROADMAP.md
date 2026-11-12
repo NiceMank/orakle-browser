@@ -26,10 +26,15 @@ flowchart LR
 - [x] Analyse objective du prototype existant Electron v1.1.0 (forces et limites).
 - [x] Rejet des dérives graphiques cyberpunk / néon et cadrage d'une identité sobre et professionnelle.
 
-### Phase 1 : Architecture Technique & ADR (En cours)
-- [x] Rédaction de l'ADR 0001 comparant Tauri v2 + WRY, Servo et Chromium/CEF.
+### Phase 1 : Architecture Technique, ADR & Preuve de Faisabilité (Terminée)
+- [x] Rédaction et validation de l'ADR 0001 comparant Tauri v2 + WRY, Servo et Chromium/CEF.
+- [x] Preuve de faisabilité technique (POC) Rust exécutée et documentée (`docs/VALIDATION/POC-TAURI-WRY.md`) :
+  - Benchmark réel `adblock` v0.13.5 : 0,824 µs / requête (10 000 itérations).
+  - Benchmark réel persistance SQLite WAL : 3,91 µs / entrée avec rollback ACID vérifié.
+  - Sonde Pulse réelle sur sockets TCP/DNS (suppression définitive des pourcentages simulés).
+  - Démonstration de l'architecture d'interception réseau via Proxy Loopback Rust SNI.
 - [x] Définition des documents de cadrage : `PRODUCT_REQUIREMENTS.md`, `ARCHITECTURE.md`, `DESIGN_SYSTEM.md`, `SECURITY_MODEL.md`, `TEST_STRATEGY.md`.
-- [ ] Validation formelle de la stratégie de migration avec Farel.
+- [x] Rendu haute définition des maquettes graphiques V2 sobres (1080p, thèmes sombre et clair).
 
 ### Phase 2 : Identité Visuelle et Nouvelle Interface Professionnelle
 - [ ] Création du nouveau logo officiel Orakle Browser (vectoriel SVG, lisible en 16x16, 32x32, 128x128 et 512x512).

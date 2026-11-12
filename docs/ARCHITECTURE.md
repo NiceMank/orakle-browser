@@ -37,7 +37,7 @@ flowchart TD
     subgraph Rust_Core ["Cœur Système Natif (Rust Core)"]
         WindowManager["Window & Layout Manager (Tao / Wry)"]
         TabEngine["Tab & Session Orchestrator"]
-        ShieldEngine["Orakle Shield (adblock-rs + Bloom Filter)"]
+        ShieldEngine["Orakle Shield (adblock-rs + Flatbuffers)"]
         NetworkProbe["Network Pulse Engine (reqwest + rustls)"]
         StorageEngine["Encrypted Local DB (rusqlite / SQLite)"]
         SecurityController["Permissions & Sandboxing Controller"]

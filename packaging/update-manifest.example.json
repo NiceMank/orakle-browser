@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "channel": "stable",
+  "version": "0.2.0",
+  "released_at": "2026-11-13T18:00:00Z",
+  "notes": "Orakle Browser V2 Phase 5 - Release Candidate interne",
+  "artifacts": {
+    "linux-x86_64-deb": {
+      "filename": "orakle-browser_0.2.0_amd64.deb",
+      "sha256": "<CALCULATED_AT_RELEASE_TIME>",
+      "signature_type": "gpg-detached-ed25519",
+      "verified_on_host": true
+    },
+    "linux-x86_64-appimage": {
+      "filename": "Orakle-Browser-0.2.0-x86_64.AppImage",
+      "sha256": "<CALCULATED_WHEN_APPIMAGETOOL_AVAILABLE>",
+      "signature_type": "gpg-detached-ed25519",
+      "verified_on_host": false
+    },
+    "windows-x86_64-msi": {
+      "filename": "orakle-browser-0.2.0-x64.msi",
+      "sha256": "<CI_WINDOWS_RUNNER>",
+      "signature_type": "authenticode-sha256",
+      "verified_on_host": false
+    },
+    "macos-universal-dmg": {
+      "filename": "Orakle-Browser-0.2.0-universal.dmg",
+      "sha256": "<CI_MACOS_RUNNER>",
+      "signature_type": "apple-notarized-developer-id",
+      "verified_on_host": false
+    }
+  }
+}

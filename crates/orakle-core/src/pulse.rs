@@ -45,25 +45,43 @@ pub struct NetworkPulse {
     timeout: Duration,
 }
 
+pub fn build_tls_client_config() -> Result<Arc<ClientConfig>> {
+    let root_store = RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+
+    let provider = tokio_rustls::rustls::crypto::ring::default_provider();
+    let config = ClientConfig::builder_with_provider(Arc::new(provider))
+        .with_safe_default_protocol_versions()
+        .map_err(|e| OrakleError::Tls(format!("Erreur versions protocole TLS : {:?}", e)))?
+        .with_root_certificates(root_store)
+        .with_no_client_auth();
+
+    Ok(Arc::new(config))
+}
+
+pub async fn tls_handshake_client(
+    tcp_stream: TcpStream,
+    host: &str,
+) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    let tls_config = build_tls_client_config()?;
+    let connector = TlsConnector::from(tls_config);
+    let server_name = ServerName::try_from(host.to_string())
+        .map_err(|e| OrakleError::Tls(format!("Nom de serveur TLS invalide : {}", e)))?;
+    connector
+        .connect(server_name, tcp_stream)
+        .await
+        .map_err(|e| OrakleError::Tls(format!("Échec handshake TLS : {}", e)))
+}
+
 impl NetworkPulse {
     pub fn new() -> Result<Self> {
         Self::with_timeout(Duration::from_secs(5))
     }
 
     pub fn with_timeout(timeout: Duration) -> Result<Self> {
-        let root_store = RootCertStore {
-            roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-        };
-
-        let provider = tokio_rustls::rustls::crypto::ring::default_provider();
-        let config = ClientConfig::builder_with_provider(Arc::new(provider))
-            .with_safe_default_protocol_versions()
-            .map_err(|e| OrakleError::Tls(format!("Erreur versions protocole TLS : {:?}", e)))?
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-
         Ok(Self {
-            tls_config: Arc::new(config),
+            tls_config: build_tls_client_config()?,
             timeout,
         })
     }

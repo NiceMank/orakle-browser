@@ -1,0 +1,14 @@
+<!-- NON COMPILÉ NI TESTÉ SUR WINDOWS (préparation distribution multiplateforme uniquement) -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="Orakle Browser V2" Manufacturer="Orakle" Version="0.2.0" UpgradeCode="B98A42E1-63D2-4F6B-9E15-2104F1B3B8A1">
+    <MajorUpgrade DowngradeErrorMessage="Une version plus récente d'Orakle Browser est déjà installée." />
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="Orakle Browser">
+        <Component Id="MainExecutable" Guid="*">
+          <File Source="target\release\orakle-app.exe" KeyPath="yes" />
+        </Component>
+      </Directory>
+    </StandardDirectory>
+  </Package>
+</Wix>

@@ -191,6 +191,7 @@ fn test_suspension_and_lifecycle_entities_survive_wal_reopen() {
             save_path: "/tmp/archive.tar.gz".into(),
             status: "Terminé".into(),
             bytes_received: 1024,
+            total_bytes: 1024,
             started_at: 22,
         })
         .unwrap();

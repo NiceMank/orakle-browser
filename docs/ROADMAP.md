@@ -1,7 +1,7 @@
 # Orakle Browser — Feuille de Route de Développement (Roadmap)
 
 - **Version** : 2.0.0
-- **Statut** : Plan directeur des versions (mise à jour Phase 4)
+- **Statut** : Plan directeur des versions (mise à jour Phase 5)
 - **Dernière mise à jour** : 2026-11-13
 
 ---
@@ -58,8 +58,11 @@ flowchart LR
 - [x] Benchmark mémoire/CPU cgroup v2 & PSS réel sur 8 scénarios × 3 passes (`--bench`) et captures PNG réelles de l'application exécutée.
 - [ ] Intégration des coffres-forts secrets OS (`libsecret` / `DPAPI` / `Keychain`), Mode Lecture (Reader) et validation sur hôtes réels Windows/macOS.
 
-### Phase 5 : Stabilisation, Tests et Distribution
-- [ ] Packaging Linux natif : `.deb` (Debian/Ubuntu/Kali), AppImage et tarball binaire.
-- [ ] Packaging Windows natif : installeur `.msi` avec signature d'intégrité.
-- [ ] Suite de tests automatisés (unitaires Rust, tests d'intégration UI Playwright/WebDriver).
-- [ ] Documentation utilisateur et site officiel de téléchargement.
+### Phase 5 : Hardening Produit, Optimisation, Sécurité & Préparation Distribution (Validée Linux — voir [`PHASE5-REPORT.md`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/docs/VALIDATION/PHASE5-REPORT.md))
+- [x] Omnibox réelle (URL, domaines sans schéma, Bangs `!gh`/`!w`/..., suggestions multi-sources Favoris + Historique + Onglets ouverts en menu superposé).
+- [x] Téléchargements résumables (`HTTP 206`/`Range`), pause/reprise/annulation, classification honnête des extensions et persistance SQLite (`crates/orakle-core/src/downloads.rs`).
+- [x] Pages d'erreur WebView natives injectées (`pages.rs` + `proxy_running_flag`) et bannière explicite de panne proxy fail-closed.
+- [x] Multi-profils isolés (`ProfileRegistry`), sessions privées éphémères (`PrivateSession`) et audit anti-SSRF 302 / anti-CSRF loopback (`phase5_security_and_profiles.rs`).
+- [x] Correction fuite `WebKitWebProcess` (`terminate_web_process()` + `fixed.remove()`), benchmark isolé cgroup v2 sur **30 passes** + 1 warmup (`phase5_bench_results.json`), validation X11 + Wayland + `GDK_SCALE=2`.
+- [x] Packaging Linux `.deb` compilé et vérifié (`packaging/linux/build-deb.sh` + `.sha256`), AppDir préparé (`build-appimage.sh`, `appimagetool` absent localement), scripts/manifests modèles Windows `.wxs` et macOS `.sh` documentés (non compilés hors cible).
+- [ ] Intégration coffres-forts OS (`libsecret` / `DPAPI` / `Keychain`), signature GPG/Authenticode/Notarization en CI et compilation hôte réelle Windows/macOS.

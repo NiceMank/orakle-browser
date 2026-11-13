@@ -3,7 +3,13 @@
 #include <stdbool.h>
 
 extern void orakle_ext_init(const char *rules_path);
-extern bool orakle_ext_should_block(const char *uri, const char *page_uri, const char *method);
+extern bool orakle_ext_check_request(
+    const char *uri,
+    const char *page_uri,
+    const char *method,
+    char *out_buf,
+    size_t out_len
+);
 
 static gboolean on_send_request(
     WebKitWebPage *web_page,
@@ -18,10 +24,12 @@ static gboolean on_send_request(
     const char *page_uri = webkit_web_page_get_uri(web_page);
     const char *method = webkit_uri_request_get_http_method(request);
 
-    if (orakle_ext_should_block(uri, page_uri, method)) {
+    char payload_buf[512];
+    payload_buf[0] = '\0';
+    if (orakle_ext_check_request(uri, page_uri, method, payload_buf, sizeof(payload_buf))) {
         WebKitUserMessage *msg = webkit_user_message_new(
             "orakle-shield-blocked",
-            g_variant_new_string(uri ? uri : "")
+            g_variant_new_string(payload_buf[0] != '\0' ? payload_buf : (uri ? uri : ""))
         );
         webkit_web_page_send_message_to_view(web_page, msg, NULL, NULL, NULL);
         return TRUE;

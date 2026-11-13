@@ -1,8 +1,8 @@
 # Orakle Browser — Product Requirements Document (PRD)
 
 - **Version du document** : 2.0.0
-- **Statut** : Document de référence produit
-- **Dernière mise à jour** : 2026-11-11
+- **Statut** : Document de référence produit (aligné Phase 5 — cibles révisées selon mesures Linux)
+- **Dernière mise à jour** : 2026-11-13
 
 ---
 
@@ -89,9 +89,9 @@ Orakle Browser est un navigateur Web indépendant de nouvelle génération, con�
 ## 4. Exigences Non-Fonctionnelles
 
 1. **Performance** :
-   - Temps de démarrage à froid de la fenêtre : < 400 ms.
-   - Consommation mémoire au repos avec 1 onglet actif : < 80 Mo de RAM.
-   - Taux de rafraîchissement de l'interface : 60 fps stable, zéro saccade lors du redimensionnement ou du défilement.
+   - Temps de démarrage à froid de la fenêtre : < 400 ms (mesuré : **271,5 ms** sous Xvfb Linux).
+   - Consommation mémoire au repos avec 1 WebView active sous WebKit2GTK Linux : ~100 Mio cgroup / ~157 Mio PSS / ~311 Mio RSS (et ~167 Mio cgroup en Split View, ~126 Mio après suspension ; voir [`PHASE5-REPORT.md`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/docs/VALIDATION/PHASE5-REPORT.md)).
+   - Réactivité des actions UI (`p50` 4,4–33,4 ms, `p95` ≤ 108,4 ms hors création simultanée de 10 onglets).
 2. **Accessibilité (a11y)** :
    - Conformité WCAG 2.2 niveau AA pour tous les composants internes de l'interface.
    - Contrastes minimum de 4.5:1 pour le texte normal, 3:1 pour le texte large.

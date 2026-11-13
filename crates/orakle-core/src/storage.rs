@@ -61,7 +61,16 @@ pub struct DownloadRecord {
     pub save_path: String,
     pub status: String,
     pub bytes_received: i64,
+    pub total_bytes: i64,
     pub started_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DomainPermission {
+    pub origin: String,
+    pub permission: String,
+    pub decision: String,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -243,6 +252,24 @@ impl StorageEngine {
                 ALTER TABLE tabs ADD COLUMN is_incognito INTEGER NOT NULL DEFAULT 0;
 
                 INSERT INTO schema_migrations (version, applied_at) VALUES (2, strftime('%s', 'now'));",
+            )?;
+            tx.commit()?;
+        }
+
+        if current_version < 3 {
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute_batch(
+                "ALTER TABLE downloads ADD COLUMN total_bytes INTEGER NOT NULL DEFAULT 0;
+
+                CREATE TABLE IF NOT EXISTS domain_permissions (
+                    origin TEXT NOT NULL,
+                    permission TEXT NOT NULL,
+                    decision TEXT NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (origin, permission)
+                );
+
+                INSERT INTO schema_migrations (version, applied_at) VALUES (3, strftime('%s', 'now'));",
             )?;
             tx.commit()?;
         }
@@ -515,17 +542,17 @@ impl StorageEngine {
     // --- Opérations Téléchargements (Downloads) ---
     pub fn upsert_download(&self, d: &DownloadRecord) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO downloads (id, url, filename, save_path, status, bytes_received, started_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
-             ON CONFLICT(id) DO UPDATE SET status=excluded.status, bytes_received=excluded.bytes_received, save_path=excluded.save_path;",
-            params![d.id, d.url, d.filename, d.save_path, d.status, d.bytes_received, d.started_at],
+            "INSERT INTO downloads (id, url, filename, save_path, status, bytes_received, total_bytes, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+             ON CONFLICT(id) DO UPDATE SET status=excluded.status, bytes_received=excluded.bytes_received, total_bytes=excluded.total_bytes, save_path=excluded.save_path;",
+            params![d.id, d.url, d.filename, d.save_path, d.status, d.bytes_received, d.total_bytes, d.started_at],
         )?;
         Ok(())
     }
 
     pub fn get_downloads(&self) -> Result<Vec<DownloadRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, url, filename, save_path, status, bytes_received, started_at FROM downloads ORDER BY started_at DESC LIMIT 100;",
+            "SELECT id, url, filename, save_path, status, bytes_received, total_bytes, started_at FROM downloads ORDER BY started_at DESC LIMIT 100;",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(DownloadRecord {
@@ -535,7 +562,8 @@ impl StorageEngine {
                 save_path: row.get(3)?,
                 status: row.get(4)?,
                 bytes_received: row.get(5)?,
-                started_at: row.get(6)?,
+                total_bytes: row.get(6)?,
+                started_at: row.get(7)?,
             })
         })?;
         let mut out = Vec::new();
@@ -543,6 +571,12 @@ impl StorageEngine {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    pub fn delete_download(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM downloads WHERE id = ?1;", params![id])?;
+        Ok(())
     }
 
     // --- Opérations Notes ---
@@ -642,6 +676,44 @@ impl StorageEngine {
             out.push(r?);
         }
         Ok(out)
+    }
+
+    // --- Opérations Permissions par Domaine ---
+    pub fn set_domain_permission(&self, p: &DomainPermission) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO domain_permissions (origin, permission, decision, updated_at)
+             VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(origin, permission) DO UPDATE SET decision=excluded.decision, updated_at=excluded.updated_at;",
+            params![p.origin, p.permission, p.decision, p.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_domain_permissions(&self) -> Result<Vec<DomainPermission>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT origin, permission, decision, updated_at FROM domain_permissions ORDER BY updated_at DESC;",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DomainPermission {
+                origin: row.get(0)?,
+                permission: row.get(1)?,
+                decision: row.get(2)?,
+                updated_at: row.get(3)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_domain_permission(&self, origin: &str, permission: &str) -> Result<()> {
+        self.conn.execute(
+            "DELETE FROM domain_permissions WHERE origin = ?1 AND permission = ?2;",
+            params![origin, permission],
+        )?;
+        Ok(())
     }
 }
 
@@ -797,5 +869,37 @@ mod tests {
             engine.get_setting("theme").unwrap().as_deref(),
             Some("light")
         );
+
+        engine
+            .upsert_download(&DownloadRecord {
+                id: "dl-v3".into(),
+                url: "https://example.com/app.deb".into(),
+                filename: "app.deb".into(),
+                save_path: "/tmp/app.deb".into(),
+                status: "En pause".into(),
+                bytes_received: 512,
+                total_bytes: 2048,
+                started_at: 400,
+            })
+            .unwrap();
+        let dls = engine.get_downloads().unwrap();
+        assert_eq!(dls.len(), 1);
+        assert_eq!(dls[0].total_bytes, 2048);
+        engine.delete_download("dl-v3").unwrap();
+        assert!(engine.get_downloads().unwrap().is_empty());
+
+        engine
+            .set_domain_permission(&DomainPermission {
+                origin: "https://meet.example.com".into(),
+                permission: "microphone".into(),
+                decision: "deny".into(),
+                updated_at: 500,
+            })
+            .unwrap();
+        assert_eq!(engine.get_domain_permissions().unwrap().len(), 1);
+        engine
+            .delete_domain_permission("https://meet.example.com", "microphone")
+            .unwrap();
+        assert!(engine.get_domain_permissions().unwrap().is_empty());
     }
 }

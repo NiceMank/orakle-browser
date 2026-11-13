@@ -1,0 +1,13 @@
+[Desktop Entry]
+Name=Orakle Browser
+GenericName=Web Browser
+Comment=Navigateur web natif Rust multi-WebView, souverain et filtrant
+Exec=orakle-browser %u
+Terminal=false
+Type=Application
+Icon=orakle-browser
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+StartupWMClass=orakle-app
+Keywords=web;browser;navigateur;orakle;

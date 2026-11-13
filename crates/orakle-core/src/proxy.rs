@@ -1,6 +1,10 @@
+use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::watch;
@@ -8,6 +12,54 @@ use url::Url;
 
 use crate::error::{OrakleError, Result};
 use crate::shield::ShieldEngine;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavigationOrigin {
+    UserOmnibox,
+    WebContent,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ProxyHealth {
+    Stopped,
+    Running,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ShieldLogEntry {
+    pub timestamp_ms: u64,
+    pub layer: String,
+    pub host_and_path: String,
+    pub resource_type: String,
+    pub rule: Option<String>,
+    pub reason: String,
+}
+
+/// Nettoie une URL pour le journal de protection : supprime identifiants, query strings (tokens/PII),
+/// fragments et tronque les chemins longs afin de ne jamais stocker de données sensibles.
+pub fn sanitize_url_for_log(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if let Ok(parsed) = Url::parse(trimmed) {
+        let host = parsed.host_str().unwrap_or("unknown");
+        let port_part = parsed.port().map(|p| format!(":{}", p)).unwrap_or_default();
+        let raw_path = parsed.path();
+        let clean_path = if raw_path.len() > 48 {
+            let truncated: String = raw_path.chars().take(48).collect();
+            format!("{}...", truncated)
+        } else {
+            raw_path.to_string()
+        };
+        return format!("{}://{}{}{}", parsed.scheme(), host, port_part, clean_path);
+    }
+    trimmed
+        .split(['?', '#'])
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take(80)
+        .collect()
+}
 
 #[derive(Debug, Clone)]
 pub struct ProxyConfig {
@@ -64,6 +116,7 @@ pub struct ProxyTelemetry {
     /// Octets réellement relayés à travers le proxy (zéro estimation heuristique)
     pub bytes_proxied: u64,
     pub events: Vec<ProxyEvent>,
+    pub shield_logs: Vec<ShieldLogEntry>,
 }
 
 pub struct SecureLoopbackProxy {
@@ -71,6 +124,8 @@ pub struct SecureLoopbackProxy {
     shield: Arc<ShieldEngine>,
     shutdown_tx: watch::Sender<bool>,
     telemetry: Arc<Mutex<ProxyTelemetry>>,
+    running: Arc<AtomicBool>,
+    allowed_dev_ports: Arc<RwLock<HashSet<u16>>>,
 }
 
 impl SecureLoopbackProxy {
@@ -82,9 +137,42 @@ impl SecureLoopbackProxy {
                 shield,
                 shutdown_tx,
                 telemetry: Arc::new(Mutex::new(ProxyTelemetry::default())),
+                running: Arc::new(AtomicBool::new(false)),
+                allowed_dev_ports: Arc::new(RwLock::new(HashSet::new())),
             },
             shutdown_rx,
         )
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
+    }
+
+    pub fn health_status(&self) -> ProxyHealth {
+        if self.is_running() {
+            ProxyHealth::Running
+        } else {
+            ProxyHealth::Stopped
+        }
+    }
+
+    pub fn authorize_user_localhost_port(&self, port: u16) {
+        if let Ok(mut guard) = self.allowed_dev_ports.write() {
+            guard.insert(port);
+        }
+    }
+
+    pub fn revoke_user_localhost_port(&self, port: u16) {
+        if let Ok(mut guard) = self.allowed_dev_ports.write() {
+            guard.remove(&port);
+        }
+    }
+
+    pub fn is_dev_port_authorized(&self, port: u16) -> bool {
+        self.allowed_dev_ports
+            .read()
+            .map(|g| g.contains(&port))
+            .unwrap_or(false)
     }
 
     pub fn telemetry_snapshot(&self) -> ProxyTelemetry {
@@ -93,19 +181,42 @@ impl SecureLoopbackProxy {
 
     /// Enregistre un blocage réellement effectué par un adaptateur natif OS (ex: WebKitWebExtension send-request)
     pub fn record_native_adapter_block(&self, url: &str, rule: Option<String>) {
+        self.record_native_adapter_block_detailed(url, "other", rule);
+    }
+
+    pub fn record_native_adapter_block_detailed(
+        &self,
+        url: &str,
+        resource_type: &str,
+        rule: Option<String>,
+    ) {
+        let clean_dest = sanitize_url_for_log(url);
         if let Ok(mut guard) = self.telemetry.lock() {
             guard.total_requests += 1;
             guard.blocked_by_shield += 1;
             guard.native_adapter_blocks += 1;
+            let layer = "WebKitWebExtension (Niveau 2)".to_string();
+            let detail = "Bloque par adaptateur natif send-request".to_string();
             push_bounded_event(
                 &mut guard.events,
                 ProxyEvent {
                     method: "SUBRESOURCE".into(),
-                    destination: url.to_string(),
-                    layer: "WebKitWebExtension (Niveau 2)".into(),
+                    destination: clean_dest.clone(),
+                    layer: layer.clone(),
                     blocked: true,
+                    rule: rule.clone(),
+                    detail: detail.clone(),
+                },
+            );
+            push_bounded_shield_log(
+                &mut guard.shield_logs,
+                ShieldLogEntry {
+                    timestamp_ms: now_epoch_ms(),
+                    layer,
+                    host_and_path: clean_dest,
+                    resource_type: resource_type.to_string(),
                     rule,
-                    detail: "Bloque par adaptateur natif send-request".into(),
+                    reason: detail,
                 },
             );
         }
@@ -125,6 +236,9 @@ impl SecureLoopbackProxy {
         let shield = self.shield.clone();
         let config = self.config.clone();
         let telemetry = self.telemetry.clone();
+        let running = self.running.clone();
+        let dev_ports = self.allowed_dev_ports.clone();
+        running.store(true, Ordering::SeqCst);
 
         tokio::spawn(async move {
             loop {
@@ -135,8 +249,9 @@ impl SecureLoopbackProxy {
                                 let shield_ref = shield.clone();
                                 let cfg_ref = config.clone();
                                 let tel_ref = telemetry.clone();
+                                let dev_ref = dev_ports.clone();
                                 tokio::spawn(async move {
-                                    if let Err(e) = handle_client(client_stream, shield_ref, cfg_ref, tel_ref).await {
+                                    if let Err(e) = handle_client(client_stream, shield_ref, cfg_ref, tel_ref, dev_ref).await {
                                         tracing::debug!("Proxy connection closed/error : {:?}", e);
                                     }
                                 });
@@ -149,11 +264,13 @@ impl SecureLoopbackProxy {
                     _ = shutdown_rx.changed() => {
                         if *shutdown_rx.borrow() {
                             tracing::info!("Arrêt propre du proxy Orakle Loopback");
+                            running.store(false, Ordering::SeqCst);
                             break;
                         }
                     }
                 }
             }
+            running.store(false, Ordering::SeqCst);
         });
 
         Ok(local_addr)
@@ -161,8 +278,16 @@ impl SecureLoopbackProxy {
 
     /// Déclenche l'arrêt propre de toutes les écoutes du proxy
     pub fn shutdown(&self) {
+        self.running.store(false, Ordering::SeqCst);
         let _ = self.shutdown_tx.send(true);
     }
+}
+
+fn now_epoch_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn push_bounded_event(events: &mut Vec<ProxyEvent>, event: ProxyEvent) {
@@ -171,6 +296,14 @@ fn push_bounded_event(events: &mut Vec<ProxyEvent>, event: ProxyEvent) {
         events.remove(0);
     }
     events.push(event);
+}
+
+fn push_bounded_shield_log(logs: &mut Vec<ShieldLogEntry>, entry: ShieldLogEntry) {
+    const MAX_SHIELD_LOGS: usize = 200;
+    if logs.len() >= MAX_SHIELD_LOGS {
+        logs.remove(0);
+    }
+    logs.push(entry);
 }
 
 fn record_event(
@@ -213,17 +346,31 @@ fn record_event(
             }
         };
 
+        let clean_dest = sanitize_url_for_log(destination);
         push_bounded_event(
             &mut guard.events,
             ProxyEvent {
                 method: method.to_string(),
-                destination: destination.to_string(),
+                destination: clean_dest.clone(),
                 layer: layer.to_string(),
                 blocked,
-                rule,
-                detail,
+                rule: rule.clone(),
+                detail: detail.clone(),
             },
         );
+        if blocked {
+            push_bounded_shield_log(
+                &mut guard.shield_logs,
+                ShieldLogEntry {
+                    timestamp_ms: now_epoch_ms(),
+                    layer: layer.to_string(),
+                    host_and_path: clean_dest,
+                    resource_type: method.to_ascii_lowercase(),
+                    rule,
+                    reason: detail,
+                },
+            );
+        }
     }
 }
 
@@ -270,11 +417,77 @@ pub fn is_forbidden_private_ip(ip: IpAddr, allow_loopback: bool) -> bool {
 }
 
 /// Vérifie qu'une URL de navigation WebView distante est sûre (pas de file://, javascript:, ni IP privée directe)
+pub fn is_host_loopback(host: &str) -> bool {
+    let trimmed = host.trim().trim_matches(['[', ']']).trim_end_matches('.');
+    let lower = trimmed.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".localhost") {
+        return true;
+    }
+    if let Ok(ip) = trimmed.parse::<IpAddr>() {
+        return match ip {
+            IpAddr::V4(v4) => v4.is_loopback(),
+            IpAddr::V6(v6) => {
+                v6.is_loopback()
+                    || v6
+                        .to_ipv4_mapped()
+                        .map(|v4| v4.is_loopback())
+                        .unwrap_or(false)
+            }
+        };
+    }
+    false
+}
+
+/// Vérifie si une page Web distante tente d'accéder silencieusement à une ressource loopback/privée (SSRF cross-origin).
+/// Une page déjà servie sur loopback (développement local) conserve l'accès à loopback mais jamais aux plages RFC1918/metadata.
+pub fn is_cross_site_local_ssrf(url_str: &str, source_str: &str) -> bool {
+    let Ok(dest) = Url::parse(url_str) else {
+        return false;
+    };
+    let Some(dest_host) = dest.host_str() else {
+        return false;
+    };
+    let dest_is_loopback = is_host_loopback(dest_host);
+    let dest_is_forbidden = dest_host
+        .trim_matches(['[', ']'])
+        .parse::<IpAddr>()
+        .map(|ip| is_forbidden_private_ip(ip, false))
+        .unwrap_or(dest_is_loopback);
+    if !dest_is_forbidden {
+        return false;
+    }
+    if dest_is_loopback {
+        if let Ok(src) = Url::parse(source_str) {
+            if let Some(src_host) = src.host_str() {
+                if is_host_loopback(src_host) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 pub fn validate_navigation_url(raw_url: &str, allow_loopback: bool) -> Result<()> {
-    if raw_url == "about:blank" {
+    let origin = if allow_loopback {
+        NavigationOrigin::UserOmnibox
+    } else {
+        NavigationOrigin::WebContent
+    };
+    validate_navigation_with_origin(raw_url, origin)
+}
+
+pub fn validate_navigation_with_origin(raw_url: &str, origin: NavigationOrigin) -> Result<()> {
+    if raw_url.chars().any(|c| c.is_control()) {
+        return Err(OrakleError::SecurityViolation(
+            "URL rejetée : présence de caractères de contrôle / CRLF".into(),
+        ));
+    }
+    let trimmed = raw_url.trim();
+    if trimmed == "about:blank" {
         return Ok(());
     }
-    let parsed = Url::parse(raw_url)
+    let parsed = Url::parse(trimmed)
         .map_err(|e| OrakleError::SecurityViolation(format!("URL invalide : {}", e)))?;
 
     match parsed.scheme() {
@@ -287,32 +500,46 @@ pub fn validate_navigation_url(raw_url: &str, allow_loopback: bool) -> Result<()
         }
     }
 
-    if let Some(host) = parsed.host_str() {
-        let host_lower = host.trim_end_matches('.').to_ascii_lowercase();
-        if !allow_loopback && (host_lower == "localhost" || host_lower.ends_with(".localhost")) {
+    let allow_loopback = matches!(origin, NavigationOrigin::UserOmnibox);
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| OrakleError::SecurityViolation("URL rejetée : hôte manquant".into()))?;
+    if host.is_empty() || host.chars().any(|c| c.is_whitespace()) {
+        return Err(OrakleError::SecurityViolation(
+            "URL rejetée : hôte malformé".into(),
+        ));
+    }
+    let host_lower = host.trim_end_matches('.').to_ascii_lowercase();
+    if !allow_loopback && (host_lower == "localhost" || host_lower.ends_with(".localhost")) {
+        return Err(OrakleError::SecurityViolation(format!(
+            "Navigation bloquée vers hôte loopback depuis contenu Web : {}",
+            host
+        )));
+    }
+    if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
+        if is_forbidden_private_ip(ip, allow_loopback) {
             return Err(OrakleError::SecurityViolation(format!(
-                "Navigation bloquée vers hôte loopback : {}",
-                host
+                "Navigation bloquée vers IP privée/interne : {}",
+                ip
             )));
-        }
-        if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
-            if is_forbidden_private_ip(ip, allow_loopback) {
-                return Err(OrakleError::SecurityViolation(format!(
-                    "Navigation bloquée vers IP privée/interne : {}",
-                    ip
-                )));
-            }
         }
     }
     Ok(())
+}
+
+fn is_dev_port_open(dev_ports: &RwLock<HashSet<u16>>, port: u16) -> bool {
+    dev_ports.read().map(|g| g.contains(&port)).unwrap_or(false)
 }
 
 fn check_port_and_literal_ip(
     host: &str,
     port: u16,
     config: &ProxyConfig,
+    dev_ports: &RwLock<HashSet<u16>>,
 ) -> std::result::Result<Option<SocketAddr>, (ProxyDecision, OrakleError)> {
-    if !config.allowed_ports.contains(&port) {
+    let loopback_host = is_host_loopback(host);
+    let dev_authorized = loopback_host && is_dev_port_open(dev_ports, port);
+    if !config.allowed_ports.contains(&port) && !dev_authorized {
         return Err((
             ProxyDecision::BlockedPort(port),
             OrakleError::SecurityViolation(format!("Port non autorisé : {}", port)),
@@ -320,9 +547,8 @@ fn check_port_and_literal_ip(
     }
 
     if let Ok(ip) = host.trim_matches(['[', ']']).parse::<IpAddr>() {
-        if config.block_private_ranges
-            && is_forbidden_private_ip(ip, config.allow_loopback_upstream)
-        {
+        let allow_lb = config.allow_loopback_upstream || dev_authorized;
+        if config.block_private_ranges && is_forbidden_private_ip(ip, allow_lb) {
             return Err((
                 ProxyDecision::BlockedSsrf(ip.to_string()),
                 OrakleError::SecurityViolation(format!("SSRF bloqué vers IP privée : {}", ip)),
@@ -338,7 +564,10 @@ async fn resolve_and_validate_upstream(
     host: &str,
     port: u16,
     config: &ProxyConfig,
+    dev_ports: &RwLock<HashSet<u16>>,
 ) -> std::result::Result<SocketAddr, (ProxyDecision, OrakleError)> {
+    let dev_authorized = is_host_loopback(host) && is_dev_port_open(dev_ports, port);
+    let allow_lb = config.allow_loopback_upstream || dev_authorized;
     let lookup = tokio::net::lookup_host((host, port)).await.map_err(|e| {
         let msg = format!("Échec résolution DNS pour {}:{} : {}", host, port, e);
         (
@@ -349,9 +578,7 @@ async fn resolve_and_validate_upstream(
 
     let mut chosen: Option<SocketAddr> = None;
     for addr in lookup {
-        if config.block_private_ranges
-            && is_forbidden_private_ip(addr.ip(), config.allow_loopback_upstream)
-        {
+        if config.block_private_ranges && is_forbidden_private_ip(addr.ip(), allow_lb) {
             return Err((
                 ProxyDecision::BlockedSsrf(addr.ip().to_string()),
                 OrakleError::SecurityViolation(format!(
@@ -373,6 +600,34 @@ async fn resolve_and_validate_upstream(
             OrakleError::Network(msg),
         )
     })
+}
+
+fn is_external_origin_targeting_loopback(target_host: &str, head_str: &str) -> bool {
+    if !is_host_loopback(target_host) {
+        return false;
+    }
+    for line in head_str.split("\r\n").skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        if let Some((k, v)) = line.split_once(':') {
+            let key = k.trim();
+            if key.eq_ignore_ascii_case("origin") || key.eq_ignore_ascii_case("referer") {
+                let val = v.trim();
+                if val.eq_ignore_ascii_case("null") {
+                    return true;
+                }
+                if let Ok(parsed) = Url::parse(val) {
+                    if let Some(src_host) = parsed.host_str() {
+                        if !is_host_loopback(src_host) {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    false
 }
 
 async fn read_http_head(stream: &mut TcpStream) -> Result<(Vec<u8>, Vec<u8>)> {
@@ -461,6 +716,7 @@ async fn handle_client(
     shield: Arc<ShieldEngine>,
     config: ProxyConfig,
     telemetry: Arc<Mutex<ProxyTelemetry>>,
+    dev_ports: Arc<RwLock<HashSet<u16>>>,
 ) -> Result<()> {
     let mut first = [0u8; 1];
     let n = client.peek(&mut first).await?;
@@ -469,9 +725,9 @@ async fn handle_client(
     }
 
     if first[0] == 0x05 {
-        handle_socks5_client(client, shield, config, telemetry).await
+        handle_socks5_client(client, shield, config, telemetry, dev_ports).await
     } else {
-        handle_http_client(client, shield, config, telemetry).await
+        handle_http_client(client, shield, config, telemetry, dev_ports).await
     }
 }
 
@@ -481,6 +737,7 @@ async fn handle_socks5_client(
     shield: Arc<ShieldEngine>,
     config: ProxyConfig,
     telemetry: Arc<Mutex<ProxyTelemetry>>,
+    dev_ports: Arc<RwLock<HashSet<u16>>>,
 ) -> Result<()> {
     let mut greet = [0u8; 2];
     client.read_exact(&mut greet).await?;
@@ -545,8 +802,18 @@ async fn handle_socks5_client(
     let dest_label = format!("{}:{}", host, port);
 
     // 1. Port + IP littérale SSRF (zéro fuite DNS)
-    let literal_addr = match check_port_and_literal_ip(&host, port, &config) {
-        Ok(opt) => opt.or_else(|| literal_ip.map(|ip| SocketAddr::new(ip, port))),
+    let literal_addr = match check_port_and_literal_ip(&host, port, &config, &dev_ports) {
+        Ok(opt) => opt.or_else(|| {
+            literal_ip.and_then(|ip| {
+                let allow_lb = config.allow_loopback_upstream
+                    || (is_host_loopback(&host) && is_dev_port_open(&dev_ports, port));
+                if config.block_private_ranges && is_forbidden_private_ip(ip, allow_lb) {
+                    None
+                } else {
+                    Some(SocketAddr::new(ip, port))
+                }
+            })
+        }),
         Err((decision, err)) => {
             record_event(
                 &telemetry,
@@ -587,7 +854,7 @@ async fn handle_socks5_client(
     // 3. Résolution DNS + anti-DNS-rebinding SSRF
     let upstream_addr = match literal_addr {
         Some(addr) => addr,
-        None => match resolve_and_validate_upstream(&host, port, &config).await {
+        None => match resolve_and_validate_upstream(&host, port, &config, &dev_ports).await {
             Ok(addr) => addr,
             Err((decision, err)) => {
                 record_event(
@@ -651,6 +918,7 @@ async fn handle_http_client(
     shield: Arc<ShieldEngine>,
     config: ProxyConfig,
     telemetry: Arc<Mutex<ProxyTelemetry>>,
+    dev_ports: Arc<RwLock<HashSet<u16>>>,
 ) -> Result<()> {
     let (head_bytes, trailing_bytes) = read_http_head(&mut client).await?;
     if head_bytes.is_empty() {
@@ -674,7 +942,7 @@ async fn handle_http_client(
     if method.eq_ignore_ascii_case("CONNECT") {
         let (host, port) = parse_host_port(target)?;
 
-        let literal_addr = match check_port_and_literal_ip(&host, port, &config) {
+        let literal_addr = match check_port_and_literal_ip(&host, port, &config, &dev_ports) {
             Ok(opt) => opt,
             Err((decision, err)) => {
                 return Err(handle_upstream_rejection(
@@ -713,7 +981,7 @@ async fn handle_http_client(
 
         let upstream_addr = match literal_addr {
             Some(addr) => addr,
-            None => match resolve_and_validate_upstream(&host, port, &config).await {
+            None => match resolve_and_validate_upstream(&host, port, &config, &dev_ports).await {
                 Ok(addr) => addr,
                 Err((decision, err)) => {
                     return Err(handle_upstream_rejection(
@@ -804,7 +1072,24 @@ async fn handle_http_client(
 
         let req_type = infer_resource_type(parsed_url.as_str(), &head_lower);
 
-        let literal_addr = match check_port_and_literal_ip(host, port, &config) {
+        if is_external_origin_targeting_loopback(host, &head_str) {
+            let err = OrakleError::SecurityViolation(format!(
+                "Requête cross-origin vers loopback bloquée (CSRF/SSRF) : {}",
+                host
+            ));
+            return Err(handle_upstream_rejection(
+                &mut client,
+                &telemetry,
+                method,
+                parsed_url.as_str(),
+                "Proxy HTTP (Anti-CSRF Loopback)",
+                ProxyDecision::BlockedSsrf(format!("cross-origin->{}", host)),
+                err,
+            )
+            .await);
+        }
+
+        let literal_addr = match check_port_and_literal_ip(host, port, &config, &dev_ports) {
             Ok(opt) => opt,
             Err((decision, err)) => {
                 return Err(handle_upstream_rejection(
@@ -842,7 +1127,7 @@ async fn handle_http_client(
 
         let upstream_addr = match literal_addr {
             Some(addr) => addr,
-            None => match resolve_and_validate_upstream(host, port, &config).await {
+            None => match resolve_and_validate_upstream(host, port, &config, &dev_ports).await {
                 Ok(addr) => addr,
                 Err((decision, err)) => {
                     return Err(handle_upstream_rejection(
@@ -905,6 +1190,61 @@ async fn handle_http_client(
         upstream.write_all(rewritten_head.as_bytes()).await?;
         if !trailing_bytes.is_empty() {
             upstream.write_all(&trailing_bytes).await?;
+        }
+
+        let inspect_redirect = !head_lower.contains("upgrade:")
+            && !head_lower.contains("content-length:")
+            && !head_lower.contains("transfer-encoding: chunked")
+            && trailing_bytes.is_empty();
+
+        if inspect_redirect {
+            let (resp_head, resp_rest) = read_http_head(&mut upstream).await?;
+            if !resp_head.is_empty() {
+                let resp_str = String::from_utf8_lossy(&resp_head);
+                let mut resp_lines = resp_str.split("\r\n");
+                let status_line = resp_lines.next().unwrap_or("");
+                let status_code = status_line.split_whitespace().nth(1).unwrap_or("");
+                if matches!(status_code, "301" | "302" | "303" | "307" | "308") {
+                    if let Some(loc) = resp_lines.find_map(|l| {
+                        let (k, v) = l.split_once(':')?;
+                        if k.trim().eq_ignore_ascii_case("location") {
+                            Some(v.trim())
+                        } else {
+                            None
+                        }
+                    }) {
+                        let resolved = parsed_url
+                            .join(loc)
+                            .map(|u| u.to_string())
+                            .unwrap_or_else(|_| loc.to_string());
+                        let redirect_origin =
+                            if config.allow_loopback_upstream && is_host_loopback(host) {
+                                NavigationOrigin::UserOmnibox
+                            } else {
+                                NavigationOrigin::WebContent
+                            };
+                        if let Err(err) =
+                            validate_navigation_with_origin(&resolved, redirect_origin)
+                        {
+                            return Err(handle_upstream_rejection(
+                                &mut client,
+                                &telemetry,
+                                method,
+                                &resolved,
+                                "Proxy HTTP (Anti-SSRF Redirect)",
+                                ProxyDecision::BlockedSsrf(sanitize_url_for_log(&resolved)),
+                                err,
+                            )
+                            .await);
+                        }
+                    }
+                }
+                client.write_all(&resp_head).await?;
+                if !resp_rest.is_empty() {
+                    client.write_all(&resp_rest).await?;
+                }
+                add_proxied_bytes(&telemetry, (resp_head.len() + resp_rest.len()) as u64);
+            }
         }
 
         if let Ok((up_b, down_b)) = tokio::io::copy_bidirectional(&mut client, &mut upstream).await

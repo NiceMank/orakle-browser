@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
+use orakle_core::proxy::{is_cross_site_local_ssrf, sanitize_url_for_log};
 use orakle_core::shield::ShieldEngine;
 
 struct ExtState {
@@ -62,13 +63,44 @@ pub unsafe extern "C" fn orakle_ext_init(rules_path: *const c_char) {
     }
 }
 
+fn infer_ext_resource_type(url_str: &str) -> &'static str {
+    let path = url_str
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url_str)
+        .to_ascii_lowercase();
+    if path.ends_with(".js") || path.ends_with(".mjs") {
+        "script"
+    } else if path.ends_with(".css") {
+        "stylesheet"
+    } else if path.ends_with(".png")
+        || path.ends_with(".jpg")
+        || path.ends_with(".jpeg")
+        || path.ends_with(".gif")
+        || path.ends_with(".svg")
+        || path.ends_with(".webp")
+        || path.ends_with(".ico")
+    {
+        "image"
+    } else if url_str.starts_with("ws://") || url_str.starts_with("wss://") {
+        "websocket"
+    } else if path.contains("/api/") || path.contains("/collect") || path.contains("/pixel") {
+        "xmlhttprequest"
+    } else {
+        "other"
+    }
+}
+
 /// # Safety
 /// Les pointeurs non nuls doivent référencer des chaînes C valides terminées par `\0`.
+/// Si la requête est bloquée et `out_buf` est fourni, écrit `<sanitized_url>\t<resource_type>\t<rule>\0`.
 #[no_mangle]
-pub unsafe extern "C" fn orakle_ext_should_block(
+pub unsafe extern "C" fn orakle_ext_check_request(
     uri: *const c_char,
     page_uri: *const c_char,
     method: *const c_char,
+    out_buf: *mut c_char,
+    out_len: usize,
 ) -> bool {
     if uri.is_null() {
         return false;
@@ -92,16 +124,50 @@ pub unsafe extern "C" fn orakle_ext_should_block(
         unsafe { CStr::from_ptr(method) }.to_str().unwrap_or("GET")
     };
 
-    let mut guard = state().lock().expect("ext state lock");
-    reload_if_changed(&mut guard);
+    let res_type = infer_ext_resource_type(url_str);
+    let mut blocked = false;
+    let mut matched_rule = String::new();
 
-    if let Ok(decision) = guard
-        .shield
-        .check_network_request(url_str, source_str, "other", method_str)
-    {
-        return decision.blocked;
+    if is_cross_site_local_ssrf(url_str, source_str) {
+        blocked = true;
+        matched_rule = "ORAKLE-SSRF-LOCAL".to_string();
+    } else {
+        let mut guard = state().lock().expect("ext state lock");
+        reload_if_changed(&mut guard);
+
+        if let Ok(decision) = guard
+            .shield
+            .check_network_request(url_str, source_str, res_type, method_str)
+        {
+            if decision.blocked {
+                blocked = true;
+                matched_rule = decision.rule.unwrap_or_default();
+            }
+        }
     }
-    false
+
+    if blocked && !out_buf.is_null() && out_len > 1 {
+        let clean = sanitize_url_for_log(url_str);
+        let payload = format!("{}\t{}\t{}", clean, res_type, matched_rule);
+        let bytes = payload.as_bytes();
+        let copy_len = bytes.len().min(out_len - 1);
+        unsafe {
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), out_buf as *mut u8, copy_len);
+            *out_buf.add(copy_len) = 0;
+        }
+    }
+    blocked
+}
+
+/// # Safety
+/// Les pointeurs non nuls doivent référencer des chaînes C valides terminées par `\0`.
+#[no_mangle]
+pub unsafe extern "C" fn orakle_ext_should_block(
+    uri: *const c_char,
+    page_uri: *const c_char,
+    method: *const c_char,
+) -> bool {
+    unsafe { orakle_ext_check_request(uri, page_uri, method, std::ptr::null_mut(), 0) }
 }
 
 extern "C" {

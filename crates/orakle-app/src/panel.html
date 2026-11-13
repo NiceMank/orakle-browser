@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="fr" data-theme="dark">
+<html lang="fr" data-theme="dark" data-density="comfortable">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -10,11 +10,11 @@
     --surface: #161b22;
     --surface-2: #1c222b;
     --surface-hover: #212834;
-    --border: rgba(240, 246, 252, 0.10);
+    --border: rgba(240, 246, 252, 0.11);
     --text: #f0f6fc;
     --text-muted: #8b949e;
     --accent: #0969da;
-    --accent-soft: rgba(9, 105, 218, 0.16);
+    --accent-soft: color-mix(in srgb, var(--accent) 18%, transparent);
     --ok: #10b981;
     --warn: #d29922;
     --danger: #f85149;
@@ -24,11 +24,10 @@
     --surface: #ffffff;
     --surface-2: #eaeef2;
     --surface-hover: #e2e8f0;
-    --border: rgba(31, 35, 40, 0.12);
+    --border: rgba(31, 35, 40, 0.13);
     --text: #1f2328;
     --text-muted: #59636e;
-    --accent: #0969da;
-    --accent-soft: rgba(9, 105, 218, 0.10);
+    --accent-soft: color-mix(in srgb, var(--accent) 12%, transparent);
     --ok: #1a7f37;
     --warn: #9a6700;
     --danger: #cf222e;
@@ -102,24 +101,25 @@
     font-size: 12px;
   }
   button.btn {
-    padding: 5px 10px;
+    padding: 5px 9px;
     border-radius: 6px;
     border: 1px solid var(--border);
     background: var(--surface-2);
     color: var(--text);
     cursor: pointer;
-    font-size: 12px;
+    font-size: 11.5px;
+    white-space: nowrap;
   }
   button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
   button.btn.danger { color: var(--danger); border-color: rgba(248, 81, 73, 0.35); }
   .list-item {
-    padding: 7px 8px;
+    padding: 8px 9px;
     border-radius: 6px;
     background: var(--bg);
     border: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
   }
   .list-item a { color: var(--text); text-decoration: none; font-weight: 500; cursor: pointer; word-break: break-all; }
   .list-item a:hover { color: var(--accent); }
@@ -134,6 +134,14 @@
   }
   .badge.blocked { background: rgba(248, 81, 73, 0.14); color: var(--danger); }
   .badge.ok { background: rgba(16, 185, 129, 0.14); color: var(--ok); }
+  .badge.warn { background: rgba(210, 153, 34, 0.16); color: var(--warn); }
+  .prog-track { width: 100%; height: 6px; border-radius: 99px; background: var(--surface-2); overflow: hidden; }
+  .prog-fill { height: 100%; background: var(--accent); transition: width 120ms linear; }
+  .swatch-row { display: flex; gap: 6px; align-items: center; }
+  .swatch {
+    width: 22px; height: 22px; border-radius: 6px; border: 2px solid transparent; cursor: pointer;
+  }
+  .swatch.active { border-color: var(--text); transform: scale(1.06); }
 </style>
 </head>
 <body>
@@ -173,9 +181,18 @@
       return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
     }
 
+    function fmtBytes(n) {
+      const v = Number(n || 0);
+      if (v >= 1048576) return (v / 1048576).toFixed(2) + " Mio";
+      if (v >= 1024) return (v / 1024).toFixed(1) + " Kio";
+      return v + " o";
+    }
+
     function renderShield(body) {
       const tel = snap.telemetry;
       const enabled = snap.shield_enabled;
+      const logs = (tel.shield_logs || []).slice(-25).reverse();
+      const perms = snap.permissions || [];
       body.innerHTML = `
         <div class="section-box">
           <div class="row">
@@ -183,30 +200,19 @@
             <button class="btn ${enabled ? 'primary' : ''}" id="toggleShieldBtn">${enabled ? 'Activée' : 'Désactivée'}</button>
           </div>
           <div class="row muted">
-            <span>Proxy Loopback (HTTP/CONNECT/SOCKS5)</span>
-            <span class="mono">${esc(snap.proxy_addr)}</span>
+            <span>État du proxy local (fail-closed)</span>
+            <span class="badge ${snap.proxy_running ? 'ok' : 'blocked'}">${snap.proxy_running ? 'Actif' : 'Arrêté'}</span>
           </div>
-          <div class="row muted">
-            <span>Requêtes bloquées (Shield)</span>
-            <strong class="mono">${tel.blocked_by_shield}</strong>
-          </div>
-          <div class="row muted">
-            <span>Dont adaptateur natif WebKitWebExtension</span>
-            <span class="mono">${tel.native_adapter_blocks}</span>
-          </div>
-          <div class="row muted">
-            <span>SSRF / Ports bloqués</span>
-            <span class="mono">${tel.blocked_ssrf} / ${tel.blocked_port}</span>
-          </div>
-          <div class="row muted">
-            <span>Trafic relayé vérifié</span>
-            <span class="mono">${tel.bytes_proxied} octets</span>
-          </div>
-          <p class="muted">Transparence : aucune estimation arbitraire de données économisées ni note de sécurité inventée.</p>
+          ${!snap.proxy_running ? `<button class="btn primary" onclick="postCmd('restart_proxy', {})">Redémarrer le proxy local</button>` : ''}
+          <div class="row muted"><span>Adresse loopback</span><span class="mono">${esc(snap.proxy_addr)}</span></div>
+          <div class="row muted"><span>Requêtes bloquées (total)</span><strong class="mono">${tel.blocked_by_shield}</strong></div>
+          <div class="row muted"><span>Adaptateur natif Niveau 2</span><span class="mono">${tel.native_adapter_blocks}</span></div>
+          <div class="row muted"><span>SSRF / Ports bloqués</span><span class="mono">${tel.blocked_ssrf} / ${tel.blocked_port}</span></div>
+          <div class="row muted"><span>Trafic relayé vérifié</span><span class="mono">${fmtBytes(tel.bytes_proxied)}</span></div>
         </div>
 
         <div class="section-box">
-          <strong>Exceptions de domaines (allowlist)</strong>
+          <strong>Exceptions (allowlist)</strong>
           <div class="row">
             <input id="excInput" placeholder="ex: example.com" />
             <button class="btn primary" id="addExcBtn">Autoriser</button>
@@ -217,6 +223,20 @@
               <button class="btn danger" onclick="postCmd('remove_exception', { domain: '${esc(d)}' })">Retirer</button>
             </div>
           `).join("") || '<span class="muted">Aucune exception configurée.</span>'}
+        </div>
+
+        <div class="section-box">
+          <strong>Permissions matérielles par domaine</strong>
+          <p class="muted">Toutes les demandes (micro, caméra, géolocalisation, notifications) sont refusées par défaut (fail-closed) sauf décision enregistrée.</p>
+          ${perms.map((p) => `
+            <div class="row list-item" style="flex-direction:row;">
+              <div>
+                <div class="mono">${esc(p.origin)}</div>
+                <span class="muted">${esc(p.permission)} · ${esc(p.decision)}</span>
+              </div>
+              <button class="btn danger" onclick="postCmd('delete_permission', { origin: '${esc(p.origin)}', permission: '${esc(p.permission)}' })">Réinit.</button>
+            </div>
+          `).join("") || '<span class="muted">Aucune permission enregistrée.</span>'}
         </div>
 
         <div class="section-box">
@@ -231,17 +251,17 @@
         </div>
 
         <div class="section-box">
-          <strong>Journal récent (domaines & règles appliquées)</strong>
-          ${(tel.events || []).slice(-18).reverse().map((ev) => `
+          <strong>Journal de protection (sans query/tokens/PII, borné)</strong>
+          ${logs.map((ev) => `
             <div class="list-item">
               <div class="row">
-                <span class="badge ${ev.blocked ? 'blocked' : 'ok'}">${esc(ev.method)}</span>
+                <span class="badge blocked">${esc(ev.resource_type)}</span>
                 <span class="muted">${esc(ev.layer)}</span>
               </div>
-              <span class="mono" style="word-break:break-all;">${esc(ev.destination)}</span>
-              <span class="muted">${esc(ev.detail)}${ev.rule ? ' · Règle : ' + esc(ev.rule) : ''}</span>
+              <span class="mono" style="word-break:break-all;">${esc(ev.host_and_path)}</span>
+              <span class="muted">${esc(ev.reason)}${ev.rule ? ' · ' + esc(ev.rule) : ''}</span>
             </div>
-          `).join("") || '<span class="muted">Aucun événement réseau enregistré.</span>'}
+          `).join("") || '<span class="muted">Aucun blocage enregistré dans cette session.</span>'}
         </div>
       `;
       document.getElementById("toggleShieldBtn").onclick = () => postCmd("toggle_shield", {});
@@ -273,7 +293,7 @@
       body.innerHTML = `
         <div class="section-box">
           <div class="row">
-            <span class="muted">Seuls les onglets normaux sont journalisés (les onglets privés n'écrivent jamais dans SQLite).</span>
+            <span class="muted">Les onglets privés n'écrivent jamais dans l'historique SQLite.</span>
             <button class="btn danger" id="clearHistBtn">Purger</button>
           </div>
         </div>
@@ -288,13 +308,51 @@
     }
 
     function renderDownloads(body) {
-      body.innerHTML = (snap.downloads || []).map((d) => `
-        <div class="list-item">
-          <div class="row"><strong>${esc(d.filename)}</strong><span class="badge">${esc(d.status)}</span></div>
-          <span class="mono muted">${esc(d.save_path)}</span>
-          <span class="mono muted">${esc(d.url)}</span>
+      const liveMap = snap.live_downloads || {};
+      body.innerHTML = `
+        <div class="section-box">
+          <strong>Nouveau téléchargement résumable (HTTP Range)</strong>
+          <div class="row">
+            <input id="dlUrlInput" placeholder="https://... ou http://..." />
+            <button class="btn primary" id="startDlBtn">Lancer</button>
+          </div>
+          <p class="muted">Nom assaini anti-traversée, fichiers partiels <span class="mono">.oraklepart</span>, anti-écrasement automatique. Aucun antivirus intégré n'est inclus.</p>
         </div>
-      `).join("") || '<span class="muted">Aucun téléchargement enregistré dans cette session.</span>';
+        ${(snap.downloads || []).map((d) => {
+          const live = liveMap[d.id] || {};
+          const pct = d.total_bytes > 0 ? Math.min(100, Math.round((d.bytes_received / d.total_bytes) * 100)) : 0;
+          const speed = live.speed_bps ? fmtBytes(live.speed_bps) + "/s" : "";
+          const badgeCls = d.status === "Terminé" ? "ok" : (d.status === "Échec" || d.status === "Annulé" ? "blocked" : "warn");
+          return `
+            <div class="list-item">
+              <div class="row">
+                <strong>${esc(d.filename)}</strong>
+                <span class="badge ${badgeCls}">${esc(d.status)}</span>
+              </div>
+              ${live.exec_warning ? `<span class="badge warn">Fichier exécutable : aucun antivirus intégré, vérifiez la source.</span>` : ''}
+              ${d.total_bytes > 0 ? `<div class="prog-track"><div class="prog-fill" style="width:${pct}%"></div></div>` : ''}
+              <div class="row muted">
+                <span class="mono">${fmtBytes(d.bytes_received)}${d.total_bytes > 0 ? ' / ' + fmtBytes(d.total_bytes) + ' (' + pct + '%)' : ' (taille inconnue)'}</span>
+                <span class="mono">${esc(speed)}</span>
+              </div>
+              <span class="mono muted" style="word-break:break-all;">${esc(d.save_path)}</span>
+              ${live.error_message ? `<span class="muted" style="color:var(--danger);">${esc(live.error_message)}</span>` : ''}
+              <div class="row" style="justify-content:flex-start;flex-wrap:wrap;gap:5px;margin-top:4px;">
+                ${live.resumable && d.status === "En cours" ? `<button class="btn" onclick="postCmd('pause_download', { id: '${esc(d.id)}' })">Pause</button>` : ''}
+                ${live.resumable && d.status === "En pause" ? `<button class="btn primary" onclick="postCmd('resume_download', { id: '${esc(d.id)}' })">Reprendre</button>` : ''}
+                ${d.status === "En cours" || d.status === "En pause" ? `<button class="btn danger" onclick="postCmd('cancel_download', { id: '${esc(d.id)}' })">Annuler</button>` : ''}
+                ${d.status === "Terminé" ? `<button class="btn primary" onclick="postCmd('open_download_file', { id: '${esc(d.id)}' })">Ouvrir</button>` : ''}
+                ${d.status === "Terminé" ? `<button class="btn" onclick="postCmd('open_download_folder', { id: '${esc(d.id)}' })">Dossier</button>` : ''}
+                <button class="btn danger" onclick="postCmd('delete_download', { id: '${esc(d.id)}' })">Retirer</button>
+              </div>
+            </div>
+          `;
+        }).join("") || '<span class="muted">Aucun téléchargement enregistré.</span>'}
+      `;
+      document.getElementById("startDlBtn").onclick = () => {
+        const url = document.getElementById("dlUrlInput").value.trim();
+        if (url) postCmd("start_resumable_download", { url });
+      };
     }
 
     function renderSpaces(body) {
@@ -389,14 +447,31 @@
     }
 
     function renderSettings(body) {
+      const accents = ["#0969da", "#0f766e", "#4f46e5", "#b45309", "#be123c"];
+      const themePref = snap.theme_pref || "dark";
+      const density = snap.density || "comfortable";
       body.innerHTML = `
         <div class="section-box">
-          <strong>Apparence</strong>
+          <strong>Apparence & Accessibilité</strong>
           <div class="row">
             <span>Thème</span>
-            <div style="display:flex;gap:6px;">
-              <button class="btn ${snap.theme === 'dark' ? 'primary' : ''}" onclick="postCmd('set_theme', { theme: 'dark' })">Sombre</button>
-              <button class="btn ${snap.theme === 'light' ? 'primary' : ''}" onclick="postCmd('set_theme', { theme: 'light' })">Clair</button>
+            <div style="display:flex;gap:4px;">
+              <button class="btn ${themePref === 'dark' ? 'primary' : ''}" onclick="postCmd('set_theme', { theme: 'dark' })">Sombre</button>
+              <button class="btn ${themePref === 'light' ? 'primary' : ''}" onclick="postCmd('set_theme', { theme: 'light' })">Clair</button>
+              <button class="btn ${themePref === 'system' ? 'primary' : ''}" onclick="postCmd('set_theme', { theme: 'system' })">Système</button>
+            </div>
+          </div>
+          <div class="row">
+            <span>Accent</span>
+            <div class="swatch-row">
+              ${accents.map((c) => `<button type="button" class="swatch ${snap.accent === c ? 'active' : ''}" style="background:${c};" onclick="postCmd('set_accent', { accent: '${c}' })" aria-label="Accent ${c}"></button>`).join("")}
+            </div>
+          </div>
+          <div class="row">
+            <span>Densité</span>
+            <div style="display:flex;gap:4px;">
+              <button class="btn ${density === 'comfortable' ? 'primary' : ''}" onclick="postCmd('set_density', { density: 'comfortable' })">Confort</button>
+              <button class="btn ${density === 'compact' ? 'primary' : ''}" onclick="postCmd('set_density', { density: 'compact' })">Compact</button>
             </div>
           </div>
         </div>
@@ -411,23 +486,38 @@
         </div>
 
         <div class="section-box">
-          <strong>Profils & Confidentialité</strong>
+          <strong>Gestion des Profils isolés</strong>
           <div class="row muted"><span>Profil actif</span><strong class="mono">${esc(snap.profile_name)}</strong></div>
-          <div class="row muted"><span>Répertoire isolé</span></div>
           <span class="mono muted" style="word-break:break-all;">${esc(snap.profile_dir)}</span>
           <div class="row">
-            <input id="newProfileInput" placeholder="Nouveau profil (ex: Perso)" />
-            <button class="btn primary" id="switchProfileBtn">Ouvrir</button>
+            <input id="newProfileInput" placeholder="Nouveau profil (ex: Travail)" />
+            <button class="btn primary" id="createProfileBtn">Créer</button>
           </div>
-          <button class="btn danger" id="purgeProfileBtn">Purger cache & cookies WebView</button>
+          ${(snap.profiles || []).map((p) => `
+            <div class="list-item">
+              <div class="row">
+                <strong>${esc(p.name)}</strong>
+                ${p.is_startup ? '<span class="badge ok">Démarrage</span>' : ''}
+              </div>
+              <div class="row" style="justify-content:flex-start;gap:5px;flex-wrap:wrap;">
+                <button class="btn ${p.id === snap.profile_id ? 'primary' : ''}" onclick="postCmd('launch_profile', { id: '${esc(p.id)}' })">
+                  ${p.id === snap.profile_id ? 'Session active' : 'Ouvrir fenêtre'}
+                </button>
+                ${!p.is_startup ? `<button class="btn" onclick="postCmd('set_startup_profile', { id: '${esc(p.id)}' })">Démarrer ici</button>` : ''}
+                ${p.id !== 'default' && p.id !== snap.profile_id ? `<button class="btn danger" onclick="postCmd('delete_profile', { id: '${esc(p.id)}' })">Suppr.</button>` : ''}
+              </div>
+            </div>
+          `).join("")}
+          <p class="muted">Mode Privé : les onglets privés utilisent un stockage éphémère supprimé à la fermeture. Traces hors navigateur (logs réseau FAI, résolveur DNS système, swap OS) restent hors du contrôle d'Orakle.</p>
+          <button class="btn danger" id="purgeProfileBtn">Purger cache & historique de ce profil</button>
         </div>
       `;
       document.getElementById("searchEngineSel").onchange = (e) => {
         postCmd("set_search_engine", { engine: e.target.value });
       };
-      document.getElementById("switchProfileBtn").onclick = () => {
+      document.getElementById("createProfileBtn").onclick = () => {
         const name = document.getElementById("newProfileInput").value.trim();
-        if (name) postCmd("switch_profile", { name });
+        if (name) postCmd("create_profile", { name });
       };
       document.getElementById("purgeProfileBtn").onclick = () => postCmd("purge_profile_data", {});
     }
@@ -435,6 +525,10 @@
     window.applyPanelData = (data) => {
       snap = data;
       document.documentElement.setAttribute("data-theme", snap.theme || "dark");
+      document.documentElement.setAttribute("data-density", snap.density || "comfortable");
+      if (snap.accent) {
+        document.documentElement.style.setProperty("--accent", snap.accent);
+      }
       const titles = {
         shield: "Orakle Shield",
         bookmarks: "Favoris",

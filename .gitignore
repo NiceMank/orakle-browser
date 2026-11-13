@@ -7,3 +7,4 @@ dist-electron/
 .env.*
 target/
 **/target/
+packaging/dist/

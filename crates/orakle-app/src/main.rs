@@ -1,11 +1,14 @@
 mod bench;
 mod metrics;
+mod pages;
 
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use tao::dpi::{LogicalPosition, LogicalSize};
@@ -24,22 +27,32 @@ use gtk::prelude::*;
 #[cfg(target_os = "linux")]
 use tao::platform::unix::WindowExtUnix;
 #[cfg(target_os = "linux")]
-use webkit2gtk::{PermissionRequestExt, UserMessageExt, WebViewExt as WebKitWebViewExt};
+use webkit2gtk::{
+    CacheModel, DownloadExt, PermissionRequestExt, URIRequestExt, URIResponseExt, UserMessageExt,
+    WebContextExt, WebViewExt as WebKitWebViewExt,
+};
 #[cfg(target_os = "linux")]
 use wry::{WebViewBuilderExtUnix, WebViewExtUnix};
 
 use orakle_core::{
-    platform_capability_matrix, sync_rules_file_for_webkit_extension, validate_navigation_url,
-    BookmarkEntry, DownloadRecord, HistoryEntry, NetworkPulse, NoteEntry, PrivateSession,
-    ProfileContext, ProxyConfig, SecureLoopbackProxy, SessionRecord, ShieldEngine, Space,
-    TabRecord,
+    classify_filename_risk, download_resumable_to_path, platform_capability_matrix,
+    resolve_safe_destination, sanitize_filename, sync_rules_file_for_webkit_extension,
+    validate_navigation_with_origin, BookmarkEntry, DomainPermission, DownloadControl,
+    DownloadRecord, DownloadSafetyRisk, HistoryEntry, NavigationOrigin, NetworkPulse, NoteEntry,
+    PrivateSession, ProfileContext, ProfileRegistry, ProxyConfig, SecureLoopbackProxy,
+    SessionRecord, ShieldEngine, Space, TabRecord, DL_STATE_CANCELLED, DL_STATE_COMPLETED,
+    DL_STATE_ERROR, DL_STATE_PAUSED,
+};
+use pages::{
+    build_omnibox_suggestions, classify_webkit_error, render_error_page_html,
+    render_start_page_html, resolve_omnibox_input, ErrorPageKind,
 };
 
 const CHROME_HTML: &str = include_str!("chrome.html");
 const PANEL_HTML: &str = include_str!("panel.html");
 
-const TOP_BASE_HEIGHT: i32 = 86; // 46px topbar + 40px tabstrip
 const SPLIT_BAR_HEIGHT: i32 = 28;
+const PROXY_BANNER_HEIGHT: i32 = 36;
 const PANEL_WIDTH: i32 = 360;
 
 const DEFAULT_RULES: &str = "
@@ -75,6 +88,12 @@ enum UserEvent {
     },
     NativeAdapterBlocked {
         url: String,
+        resource_type: String,
+        rule: Option<String>,
+    },
+    WebPermissionDenied {
+        origin: String,
+        permission: String,
     },
     DownloadStarted {
         id: String,
@@ -86,12 +105,32 @@ enum UserEvent {
         url: String,
         success: bool,
     },
+    DownloadProgress {
+        id: String,
+        url: String,
+        filename: String,
+        save_path: String,
+        received_bytes: u64,
+        total_bytes: u64,
+        speed_bps: u64,
+        status: String,
+        error_message: Option<String>,
+    },
     PulseCompleted(PulseViewData),
     SyncScrollApply {
         tab_id: String,
         y: f64,
     },
     VerifyStep(u8),
+    VerifyPhase5Step(u8),
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LiveDownloadMeta {
+    resumable: bool,
+    speed_bps: u64,
+    exec_warning: bool,
+    error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -142,12 +181,17 @@ struct ChromeStateSnapshot {
     panel_open: bool,
     panel_section: String,
     theme: String,
+    accent: String,
+    density: String,
     shield_enabled: bool,
     shield_blocked: u64,
+    proxy_running: bool,
     can_go_back: bool,
     can_go_forward: bool,
     closed_count: usize,
     downloads_count: usize,
+    profile_name: String,
+    toast: Option<String>,
 }
 
 struct TabItem {
@@ -267,6 +311,48 @@ async fn spawn_local_demo_server() -> SocketAddr {
                             <script>window.__rightAlloc = new Array(400000).fill('orakle-right');</script>
                             </body></html>"#,
                         ),
+                        "/page2" => (
+                            "200 OK",
+                            "text/html; charset=utf-8",
+                            r#"<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Page 2 — Navigation Locale</title></head>
+                            <body style="font-family:sans-serif;background:#0d1117;color:#f0f6fc;padding:32px;">
+                            <h1>Seconde Page Orakle</h1><p>Navigation Précédent / Suivant vérifiée.</p></body></html>"#,
+                        ),
+                        "/redirect-ssrf" => {
+                            let resp = "HTTP/1.1 302 Found\r\nLocation: http://169.254.169.254/latest/meta-data\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                            let _ = stream.write_all(resp.as_bytes()).await;
+                            return;
+                        }
+                        "/download-test.bin" => {
+                            let total = 262_144usize;
+                            let payload: Vec<u8> = (0..total).map(|i| (i % 251) as u8).collect();
+                            let range_start = req
+                                .lines()
+                                .find(|l| l.to_ascii_lowercase().starts_with("range: bytes="))
+                                .and_then(|l| l.split('=').nth(1))
+                                .and_then(|r| r.split('-').next())
+                                .and_then(|n| n.trim().parse::<usize>().ok())
+                                .unwrap_or(0)
+                                .min(total);
+                            let slice = &payload[range_start..];
+                            let hdr = if range_start > 0 {
+                                format!(
+                                    "HTTP/1.1 206 Partial Content\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\nContent-Range: bytes {}-{}/{}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                    range_start,
+                                    total.saturating_sub(1),
+                                    total,
+                                    slice.len()
+                                )
+                            } else {
+                                format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nAccept-Ranges: bytes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                    total
+                                )
+                            };
+                            let _ = stream.write_all(hdr.as_bytes()).await;
+                            let _ = stream.write_all(slice).await;
+                            return;
+                        }
                         _ => ("404 Not Found", "text/plain", "Not Found"),
                     };
 
@@ -286,13 +372,49 @@ async fn spawn_local_demo_server() -> SocketAddr {
     addr
 }
 
+fn resolve_effective_theme(pref: &str) -> String {
+    if pref == "light" {
+        return "light".to_string();
+    }
+    if pref == "system" {
+        if let Ok(out) = std::process::Command::new("gsettings")
+            .args(["get", "org.gnome.desktop.interface", "color-scheme"])
+            .output()
+        {
+            let s = String::from_utf8_lossy(&out.stdout).to_ascii_lowercase();
+            if s.contains("default") && !s.contains("prefer-dark") {
+                return "light".to_string();
+            }
+        }
+    }
+    "dark".to_string()
+}
+
+fn origin_key_from_url(raw: &str) -> Option<String> {
+    let u = url::Url::parse(raw).ok()?;
+    let host = u.host_str()?;
+    let port = u.port_or_known_default()?;
+    Some(format!(
+        "{}://{}:{}",
+        u.scheme(),
+        host.to_ascii_lowercase(),
+        port
+    ))
+}
+
 struct BrowserHost {
     rt: Arc<tokio::runtime::Runtime>,
+    #[allow(dead_code)]
+    base_data_dir: PathBuf,
+    registry: ProfileRegistry,
     profile: ProfileContext,
     private_session: Option<PrivateSession>,
     shield: Arc<ShieldEngine>,
     proxy: Arc<SecureLoopbackProxy>,
+    proxy_cfg: ProxyConfig,
     proxy_port: u16,
+    proxy_running: bool,
+    proxy_running_flag: Arc<AtomicBool>,
     rules_file_path: PathBuf,
     ext_dir_opt: Option<PathBuf>,
     download_dir: PathBuf,
@@ -317,9 +439,19 @@ struct BrowserHost {
     sync_scroll: bool,
     panel_open: bool,
     panel_section: String,
-    theme: String,
+    chrome_overlay_h: i32,
+    theme_pref: String,
+    accent: String,
+    density: String,
+    toast: Option<String>,
     search_engine: String,
     last_pulse: Option<PulseViewData>,
+    live_downloads: HashMap<String, LiveDownloadMeta>,
+    resumable_controls: HashMap<String, Arc<DownloadControl>>,
+    #[cfg(target_os = "linux")]
+    webkit_downloads: Arc<Mutex<HashMap<String, webkit2gtk::Download>>>,
+    download_ctx_hooked: HashSet<usize>,
+    authorized_localhost_origins: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     win_w: i32,
     win_h: i32,
     next_id: usize,
@@ -331,6 +463,10 @@ impl BrowserHost {
         format!("{}-{}-{}", prefix, now_ts(), self.next_id)
     }
 
+    fn set_toast(&mut self, msg: impl Into<String>) {
+        self.toast = Some(msg.into());
+    }
+
     fn focused_tab_id(&self) -> Option<String> {
         if self.split_active && self.focused_pane == "right" {
             self.right_tab_id.clone()
@@ -339,29 +475,20 @@ impl BrowserHost {
         }
     }
 
-    fn normalize_input_url(&self, raw: &str) -> String {
-        let trimmed = raw.trim();
-        if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
-            return trimmed.to_string();
-        }
-        if trimmed.contains('.') && !trimmed.contains(' ') {
-            return format!("https://{}", trimmed);
-        }
-        let encoded = trimmed.replace(' ', "+");
-        match self.search_engine.as_str() {
-            "startpage" => format!("https://www.startpage.com/do/search?q={}", encoded),
-            "qwant" => format!("https://www.qwant.com/?q={}", encoded),
-            _ => format!("https://duckduckgo.com/?q={}", encoded),
-        }
-    }
-
     fn content_area(&self) -> (i32, i32, i32) {
-        let top_h = TOP_BASE_HEIGHT
+        let base_h = if self.density == "compact" { 74 } else { 86 };
+        let top_h = base_h
             + if self.split_active {
                 SPLIT_BAR_HEIGHT
             } else {
                 0
-            };
+            }
+            + if !self.proxy_running {
+                PROXY_BANNER_HEIGHT
+            } else {
+                0
+            }
+            + self.chrome_overlay_h;
         let content_w = (self.win_w - if self.panel_open { PANEL_WIDTH } else { 0 }).max(240);
         let content_h = (self.win_h - top_h).max(160);
         (top_h, content_w, content_h)
@@ -411,10 +538,62 @@ impl BrowserHost {
         }
     }
 
+    fn authorize_user_localhost(&self, tab_id: &str, url: &str) {
+        if let Some(key) = origin_key_from_url(url) {
+            if let Ok(u) = url::Url::parse(url) {
+                if let Some(host) = u.host_str() {
+                    if orakle_core::is_host_loopback(host) {
+                        if let Some(port) = u.port_or_known_default() {
+                            self.proxy.authorize_user_localhost_port(port);
+                        }
+                        if let Ok(mut map) = self.authorized_localhost_origins.lock() {
+                            map.entry(tab_id.to_string()).or_default().insert(key);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn shutdown_proxy_fail_closed(&mut self) {
+        self.proxy.shutdown();
+        self.proxy_running = false;
+        self.proxy_running_flag.store(false, Ordering::SeqCst);
+        self.set_toast("Proxy arrêté — navigation fail-closed");
+        self.relayout();
+        self.sync_ui();
+    }
+
+    fn restart_proxy_fail_closed(&mut self) {
+        self.proxy.shutdown();
+        let mut cfg = self.proxy_cfg.clone();
+        cfg.bind_addr = SocketAddr::from(([127, 0, 0, 1], self.proxy_port));
+        let (new_proxy, rx) = SecureLoopbackProxy::new(cfg, self.shield.clone());
+        let res = self.rt.block_on(async { new_proxy.start(rx).await });
+        match res {
+            Ok(addr) => {
+                self.proxy_port = addr.port();
+                self.proxy = Arc::new(new_proxy);
+                self.proxy_running = true;
+                self.proxy_running_flag.store(true, Ordering::SeqCst);
+                self.set_toast("Proxy Orakle redémarré");
+            }
+            Err(_) => {
+                self.proxy_running = false;
+                self.proxy_running_flag.store(false, Ordering::SeqCst);
+                self.set_toast("Échec redémarrage proxy");
+            }
+        }
+        self.relayout();
+        self.sync_ui();
+    }
+
     fn create_webview_for_tab(&mut self, tab_id: &str, url: &str, incognito: bool) -> WebView {
         let (top_h, content_w, content_h) = self.content_area();
         let bounds = make_rect(0, top_h, content_w, content_h);
         let allow_loopback = self.allow_loopback_nav;
+        let auth_origins = self.authorized_localhost_origins.clone();
+        let tab_id_nav = tab_id.to_string();
 
         let ev_load = self.event_proxy.clone();
         let id_load = tab_id.to_string();
@@ -425,9 +604,15 @@ impl BrowserHost {
         let ev_dl_done = self.event_proxy.clone();
         let dl_dir = self.download_dir.clone();
 
+        let initial_url = if url == "about:home" {
+            "about:blank"
+        } else {
+            url
+        };
+
         // SÉCURITÉ : Aucune WebView distante ne reçoit `with_ipc_handler`.
         let mut builder = WebViewBuilder::new_with_web_context(&mut self.normal_ctx)
-            .with_url(url)
+            .with_url(initial_url)
             .with_bounds(bounds)
             .with_incognito(incognito)
             .with_proxy_config(WryProxyConfig::Http(ProxyEndpoint {
@@ -435,10 +620,44 @@ impl BrowserHost {
                 port: self.proxy_port.to_string(),
             }))
             .with_navigation_handler(move |target_url| {
-                validate_navigation_url(&target_url, allow_loopback).is_ok()
+                if validate_navigation_with_origin(&target_url, NavigationOrigin::WebContent)
+                    .is_ok()
+                {
+                    return true;
+                }
+                if allow_loopback
+                    && validate_navigation_with_origin(&target_url, NavigationOrigin::UserOmnibox)
+                        .is_ok()
+                {
+                    return true;
+                }
+                if validate_navigation_with_origin(&target_url, NavigationOrigin::UserOmnibox)
+                    .is_ok()
+                {
+                    if let Some(k) = origin_key_from_url(&target_url) {
+                        if let Ok(guard) = auth_origins.lock() {
+                            if guard
+                                .get(&tab_id_nav)
+                                .map(|set| set.contains(&k))
+                                .unwrap_or(false)
+                            {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                false
             })
             .with_new_window_req_handler(move |target_url, _features| {
-                if validate_navigation_url(&target_url, allow_loopback).is_ok() {
+                if validate_navigation_with_origin(&target_url, NavigationOrigin::WebContent)
+                    .is_ok()
+                    || (allow_loopback
+                        && validate_navigation_with_origin(
+                            &target_url,
+                            NavigationOrigin::UserOmnibox,
+                        )
+                        .is_ok())
+                {
                     let _ = ev_new.send_event(UserEvent::NewTabFromWeb(target_url));
                 }
                 NewWindowResponse::Deny
@@ -461,7 +680,11 @@ impl BrowserHost {
                 });
             })
             .with_download_started_handler(move |dl_url, save_path| {
-                let fname = url::Url::parse(&dl_url)
+                if validate_navigation_with_origin(&dl_url, NavigationOrigin::UserOmnibox).is_err()
+                {
+                    return false;
+                }
+                let raw_name = url::Url::parse(&dl_url)
                     .ok()
                     .and_then(|u| {
                         u.path_segments()
@@ -470,12 +693,20 @@ impl BrowserHost {
                     })
                     .filter(|s| !s.is_empty())
                     .unwrap_or_else(|| "download.bin".into());
-                *save_path = dl_dir.join(&fname);
+                let safe_name = sanitize_filename(&raw_name);
+                let dest = resolve_safe_destination(&dl_dir, &safe_name)
+                    .unwrap_or_else(|_| dl_dir.join("download.bin"));
+                let final_name = dest
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(&safe_name)
+                    .to_string();
+                *save_path = dest.clone();
                 let _ = ev_dl_start.send_event(UserEvent::DownloadStarted {
                     id: format!("dl-{}", now_ts()),
                     url: dl_url,
-                    filename: fname,
-                    save_path: save_path.to_string_lossy().to_string(),
+                    filename: final_name,
+                    save_path: dest.to_string_lossy().to_string(),
                 });
                 true
             })
@@ -500,6 +731,16 @@ impl BrowserHost {
             .build_as_child(&self.window)
             .expect("build_as_child tab webview");
 
+        if url == "about:home" {
+            let eff_theme = resolve_effective_theme(&self.theme_pref);
+            let html = render_start_page_html(
+                &self.profile.record.name,
+                self.proxy.telemetry_snapshot().blocked_by_shield,
+                &eff_theme,
+            );
+            let _ = wv.load_html(&html);
+        }
+
         #[cfg(target_os = "linux")]
         {
             let gtk_wv = wv.webview();
@@ -512,20 +753,163 @@ impl BrowserHost {
                 });
             });
 
-            // Permissions matérielles fail-closed (micro, caméra, géolocalisation, notifications)
-            gtk_wv.connect_permission_request(move |_view, req| {
-                req.deny();
+            // Pages d'erreur lisibles (zéro erreur technique brute)
+            let proxy_fail_check = self.proxy_running_flag.clone();
+            gtk_wv.connect_load_failed(move |view, _load_ev, failing_uri, err| {
+                let msg = err.message();
+                let lower = msg.to_ascii_lowercase();
+                if lower.contains("cancelled") || lower.contains("frame load interrupted") {
+                    return false;
+                }
+                let kind = classify_webkit_error(&msg, proxy_fail_check.load(Ordering::SeqCst));
+                let html = render_error_page_html(kind, failing_uri);
+                let view_clone = view.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    view_clone.load_html(&html, None);
+                });
                 true
             });
+
+            gtk_wv.connect_load_failed_with_tls_errors(move |view, failing_uri, _cert, _flags| {
+                let html = render_error_page_html(ErrorPageKind::TlsInvalid, failing_uri);
+                let view_clone = view.clone();
+                gtk::glib::idle_add_local_once(move || {
+                    view_clone.load_html(&html, None);
+                });
+                true
+            });
+
+            // Permissions matérielles fail-closed (micro, caméra, géolocalisation, notifications)
+            let ev_perm = self.event_proxy.clone();
+            let allowed_origins = Arc::new(
+                self.profile
+                    .storage
+                    .get_domain_permissions()
+                    .unwrap_or_default(),
+            );
+            gtk_wv.connect_permission_request(move |view, req| {
+                let current_uri = view.uri().map(|g| g.to_string()).unwrap_or_default();
+                let origin = origin_key_from_url(&current_uri).unwrap_or_else(|| "inconnu".into());
+                let is_allowed = allowed_origins.iter().any(|p| {
+                    p.origin == origin && p.permission == "media/geo" && p.decision == "allow"
+                });
+                if is_allowed {
+                    req.allow();
+                } else {
+                    req.deny();
+                    let _ = ev_perm.send_event(UserEvent::WebPermissionDenied {
+                        origin,
+                        permission: "media/geo".into(),
+                    });
+                }
+                true
+            });
+
+            // Progression & annulation téléchargements WebKitGTK (hooké une seule fois par WebContext)
+            if let Some(ctx) = gtk_wv.web_context() {
+                let ptr_key = ctx.as_ptr() as usize;
+                if self.download_ctx_hooked.insert(ptr_key) {
+                    let ev_dl_prog = self.event_proxy.clone();
+                    let wk_map = self.webkit_downloads.clone();
+                    ctx.connect_download_started(move |_ctx, dl| {
+                        let url = dl
+                            .request()
+                            .and_then(|r| r.uri())
+                            .map(|g| g.to_string())
+                            .unwrap_or_default();
+                        let dl_id = format!("wk-{}", url);
+                        if let Ok(mut map) = wk_map.lock() {
+                            map.insert(dl_id.clone(), dl.clone());
+                        }
+                        let last_state = Arc::new(Mutex::new((0u64, Instant::now())));
+                        let ev_rx = ev_dl_prog.clone();
+                        let dl_id_rx = dl_id.clone();
+                        let url_rx = url.clone();
+                        dl.connect_received_data(move |d, _delta| {
+                            let rx_bytes = d.received_data_length();
+                            let total = d
+                                .response()
+                                .map(|r| r.content_length().max(0) as u64)
+                                .unwrap_or(0);
+                            let mut speed = 0u64;
+                            if let Ok(mut st) = last_state.lock() {
+                                let dt = st.1.elapsed().as_secs_f64();
+                                if dt >= 0.25 {
+                                    speed = ((rx_bytes.saturating_sub(st.0)) as f64 / dt) as u64;
+                                    *st = (rx_bytes, Instant::now());
+                                    let dest =
+                                        d.destination().map(|g| g.to_string()).unwrap_or_default();
+                                    let fname = Path::new(&dest)
+                                        .file_name()
+                                        .and_then(|n| n.to_str())
+                                        .unwrap_or("download.bin")
+                                        .to_string();
+                                    let _ = ev_rx.send_event(UserEvent::DownloadProgress {
+                                        id: dl_id_rx.clone(),
+                                        url: url_rx.clone(),
+                                        filename: fname,
+                                        save_path: dest,
+                                        received_bytes: rx_bytes,
+                                        total_bytes: total,
+                                        speed_bps: speed,
+                                        status: "En cours".into(),
+                                        error_message: None,
+                                    });
+                                }
+                            }
+                            let _ = speed;
+                        });
+
+                        let ev_fail = ev_dl_prog.clone();
+                        let url_fail = url.clone();
+                        let dl_id_fail = dl_id.clone();
+                        dl.connect_failed(move |d, _err| {
+                            let dest = d.destination().map(|g| g.to_string()).unwrap_or_default();
+                            let fname = Path::new(&dest)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("download.bin")
+                                .to_string();
+                            let _ = ev_fail.send_event(UserEvent::DownloadProgress {
+                                id: dl_id_fail.clone(),
+                                url: url_fail.clone(),
+                                filename: fname,
+                                save_path: dest,
+                                received_bytes: d.received_data_length(),
+                                total_bytes: d
+                                    .response()
+                                    .map(|r| r.content_length().max(0) as u64)
+                                    .unwrap_or(0),
+                                speed_bps: 0,
+                                status: "Échec".into(),
+                                error_message: Some(
+                                    "Téléchargement interrompu (réseau, proxy ou annulation)."
+                                        .into(),
+                                ),
+                            });
+                        });
+                    });
+                }
+            }
 
             // Réception des blocages HTTPS Niveau 2 envoyés par liborakle_webkit_ext.so
             let ev_ext = self.event_proxy.clone();
             gtk_wv.connect_user_message_received(move |_view, msg| {
                 if msg.name().as_deref() == Some("orakle-shield-blocked") {
                     if let Some(var) = msg.parameters() {
-                        if let Some(u) = var.str() {
-                            let _ = ev_ext
-                                .send_event(UserEvent::NativeAdapterBlocked { url: u.to_string() });
+                        if let Some(payload) = var.str() {
+                            let mut parts = payload.split('\t');
+                            let u = parts.next().unwrap_or(payload).to_string();
+                            let rtype = parts.next().unwrap_or("other").to_string();
+                            let rule = parts
+                                .next()
+                                .filter(|s| !s.is_empty())
+                                .map(ToString::to_string);
+                            let _ = ev_ext.send_event(UserEvent::NativeAdapterBlocked {
+                                url: u,
+                                resource_type: rtype,
+                                rule,
+                            });
                         }
                     }
                     return true;
@@ -593,7 +977,15 @@ impl BrowserHost {
 
     fn suspend_tab(&mut self, tab_id: &str) {
         if let Some(pos) = self.tabs.iter().position(|t| t.id == tab_id) {
-            self.tabs[pos].wv = None; // Détruit la WebView + WebKitWebProcess associé
+            if let Some(wv) = self.tabs[pos].wv.take() {
+                #[cfg(target_os = "linux")]
+                {
+                    let gwv = wv.webview();
+                    gwv.terminate_web_process();
+                    self.fixed_container.remove(&gwv);
+                }
+                drop(wv);
+            }
             self.tabs[pos].is_suspended = true;
             self.tabs[pos].is_loading = false;
             let t = TabItem {
@@ -620,10 +1012,20 @@ impl BrowserHost {
             if self.tabs[pos].wv.is_none() {
                 let url = self.tabs[pos].url.clone();
                 let incog = self.tabs[pos].is_incognito;
-                let wv = self.create_webview_for_tab(tab_id, &url, incog);
-                self.tabs[pos].wv = Some(wv);
-                self.tabs[pos].is_suspended = false;
-                self.tabs[pos].is_loading = true;
+                if validate_navigation_with_origin(&url, NavigationOrigin::UserOmnibox).is_err() {
+                    let wv = self.create_webview_for_tab(tab_id, "about:blank", incog);
+                    let html = render_error_page_html(ErrorPageKind::RestoreUnavailable, &url);
+                    let _ = wv.load_html(&html);
+                    self.tabs[pos].wv = Some(wv);
+                    self.tabs[pos].is_suspended = false;
+                    self.tabs[pos].is_loading = false;
+                    self.set_toast("Restauration bloquée par politique de sécurité");
+                } else {
+                    let wv = self.create_webview_for_tab(tab_id, &url, incog);
+                    self.tabs[pos].wv = Some(wv);
+                    self.tabs[pos].is_suspended = false;
+                    self.tabs[pos].is_loading = true;
+                }
             }
         }
         self.relayout();
@@ -660,7 +1062,16 @@ impl BrowserHost {
             return;
         }
         if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
-            let removed = self.tabs.remove(idx);
+            let mut removed = self.tabs.remove(idx);
+            if let Some(wv) = removed.wv.take() {
+                #[cfg(target_os = "linux")]
+                {
+                    let gwv = wv.webview();
+                    gwv.terminate_web_process();
+                    self.fixed_container.remove(&gwv);
+                }
+                drop(wv);
+            }
             let _ = self.profile.storage.delete_tab(&removed.id);
             self.closed_tabs.push(ClosedTab {
                 space_id: removed.space_id,
@@ -755,6 +1166,134 @@ impl BrowserHost {
         }
     }
 
+    fn start_resumable_download_task(
+        &mut self,
+        id: String,
+        url: String,
+        final_path: PathBuf,
+        filename: String,
+        control: Arc<DownloadControl>,
+    ) {
+        let proxy_port = self.proxy_port;
+        let allow_loop = self.allow_loopback_nav
+            || url::Url::parse(&url)
+                .ok()
+                .and_then(|u| u.port_or_known_default())
+                .map(|p| self.proxy.is_dev_port_authorized(p))
+                .unwrap_or(false);
+        let ev = self.event_proxy.clone();
+        let id_prog = id.clone();
+        let url_prog = url.clone();
+        let fname_prog = filename.clone();
+        let save_str = final_path.to_string_lossy().to_string();
+        let save_prog = save_str.clone();
+        let ctrl_clone = control.clone();
+        let ctrl_snap = control.clone();
+        let ev_err = ev.clone();
+        let last_tick = Arc::new(Mutex::new((0u64, Instant::now())));
+
+        self.rt.spawn(async move {
+            let res = download_resumable_to_path(
+                &url,
+                &final_path,
+                Some(proxy_port),
+                allow_loop,
+                (*ctrl_clone).clone(),
+                move |snap| {
+                    let mut speed = 0u64;
+                    let emit = if snap.state != 0 {
+                        true
+                    } else if let Ok(mut st) = last_tick.lock() {
+                        let dt = st.1.elapsed().as_secs_f64();
+                        if dt >= 0.25 {
+                            speed = ((snap.bytes_received.saturating_sub(st.0)) as f64 / dt) as u64;
+                            *st = (snap.bytes_received, Instant::now());
+                            true
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    };
+                    if emit {
+                        let status = match snap.state {
+                            s if s == DL_STATE_PAUSED => "En pause",
+                            s if s == DL_STATE_COMPLETED => "Terminé",
+                            s if s == DL_STATE_CANCELLED => "Annulé",
+                            s if s == DL_STATE_ERROR => "Échec",
+                            _ => "En cours",
+                        };
+                        let _ = ev.send_event(UserEvent::DownloadProgress {
+                            id: id_prog.clone(),
+                            url: url_prog.clone(),
+                            filename: fname_prog.clone(),
+                            save_path: save_prog.clone(),
+                            received_bytes: snap.bytes_received,
+                            total_bytes: snap.total_bytes,
+                            speed_bps: speed,
+                            status: status.to_string(),
+                            error_message: None,
+                        });
+                    }
+                },
+            )
+            .await;
+            if let Err(err) = res {
+                let snap = ctrl_snap.snapshot();
+                let _ = ev_err.send_event(UserEvent::DownloadProgress {
+                    id,
+                    url,
+                    filename,
+                    save_path: save_str,
+                    received_bytes: snap.bytes_received,
+                    total_bytes: snap.total_bytes,
+                    speed_bps: 0,
+                    status: "Échec".into(),
+                    error_message: Some(err.to_string()),
+                });
+            }
+        });
+    }
+
+    fn navigate_tab_to(&mut self, tab_id: &str, raw_input: &str) {
+        let (target, dev_port) = resolve_omnibox_input(raw_input, &self.search_engine);
+        if validate_navigation_with_origin(&target, NavigationOrigin::UserOmnibox).is_err() {
+            if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                t.url = target.clone();
+                if let Some(wv) = &t.wv {
+                    let html = render_error_page_html(ErrorPageKind::SecurityBlocked, &target);
+                    let _ = wv.load_html(&html);
+                }
+            }
+            self.set_toast("URL bloquée par politique de sécurité");
+            self.sync_ui();
+            return;
+        }
+        if dev_port.is_some() {
+            self.authorize_user_localhost(tab_id, &target);
+        }
+        if !self.proxy_running {
+            if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+                t.url = target.clone();
+                if let Some(wv) = &t.wv {
+                    let html = render_error_page_html(ErrorPageKind::ProxyUnavailable, &target);
+                    let _ = wv.load_html(&html);
+                }
+            }
+            self.set_toast("Proxy arrêté — navigation fail-closed");
+            self.sync_ui();
+            return;
+        }
+        if let Some(t) = self.tabs.iter_mut().find(|t| t.id == tab_id) {
+            t.url = target.clone();
+            t.is_loading = true;
+            if let Some(wv) = &t.wv {
+                let _ = wv.load_url(&target);
+            }
+        }
+        self.sync_ui();
+    }
+
     fn sync_ui(&self) {
         let focused_id = self.focused_tab_id();
         #[allow(unused_mut)]
@@ -777,6 +1316,8 @@ impl BrowserHost {
         }
 
         let tel = self.proxy.telemetry_snapshot();
+        let eff_theme = resolve_effective_theme(&self.theme_pref);
+        let downloads_list = self.profile.storage.get_downloads().unwrap_or_default();
         let snapshot = ChromeStateSnapshot {
             tabs: self
                 .tabs
@@ -803,18 +1344,18 @@ impl BrowserHost {
             sync_scroll: self.sync_scroll,
             panel_open: self.panel_open,
             panel_section: self.panel_section.clone(),
-            theme: self.theme.clone(),
+            theme: eff_theme.clone(),
+            accent: self.accent.clone(),
+            density: self.density.clone(),
             shield_enabled: self.shield.is_enabled(),
             shield_blocked: tel.blocked_by_shield,
+            proxy_running: self.proxy_running,
             can_go_back: can_back,
             can_go_forward: can_fwd,
             closed_count: self.closed_tabs.len(),
-            downloads_count: self
-                .profile
-                .storage
-                .get_downloads()
-                .map(|v| v.len())
-                .unwrap_or(0),
+            downloads_count: downloads_list.len(),
+            profile_name: self.profile.record.name.clone(),
+            toast: self.toast.clone(),
         };
 
         if let Ok(json) = serde_json::to_string(&snapshot) {
@@ -826,23 +1367,31 @@ impl BrowserHost {
         if self.panel_open {
             let panel_payload = serde_json::json!({
                 "section": self.panel_section,
-                "theme": self.theme,
+                "theme": eff_theme,
+                "theme_pref": self.theme_pref,
+                "accent": self.accent,
+                "density": self.density,
                 "shield_enabled": self.shield.is_enabled(),
+                "proxy_running": self.proxy_running,
                 "proxy_addr": format!("127.0.0.1:{}", self.proxy_port),
                 "telemetry": tel,
                 "exceptions": self.shield.exception_domains(),
+                "permissions": self.profile.storage.get_domain_permissions().unwrap_or_default(),
                 "adapters": platform_capability_matrix(),
                 "bookmarks": self.profile.storage.get_bookmarks().unwrap_or_default(),
                 "history": self.profile.storage.get_history(80).unwrap_or_default(),
-                "downloads": self.profile.storage.get_downloads().unwrap_or_default(),
+                "downloads": downloads_list,
+                "live_downloads": self.live_downloads,
                 "spaces": self.spaces,
                 "active_space_id": self.active_space_id,
                 "sessions": self.profile.storage.get_sessions().unwrap_or_default(),
                 "notes": self.profile.storage.get_notes().unwrap_or_default(),
                 "last_pulse": self.last_pulse,
                 "search_engine": self.search_engine,
+                "profile_id": self.profile.record.id,
                 "profile_name": self.profile.record.name,
                 "profile_dir": self.profile.root_dir.to_string_lossy(),
+                "profiles": self.registry.list_profiles(),
             });
             if let Ok(pjson) = serde_json::to_string(&panel_payload) {
                 let _ = self
@@ -860,20 +1409,56 @@ impl BrowserHost {
             "ui_ready" => {
                 self.sync_ui();
             }
+            "set_chrome_overlay" => {
+                let h = msg
+                    .payload
+                    .get("height")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0) as i32;
+                self.chrome_overlay_h = h.clamp(0, 240);
+                self.relayout();
+            }
+            "query_omnibox" => {
+                let q = msg
+                    .payload
+                    .get("query")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
+                let open_tabs: Vec<(String, String, String, bool)> = self
+                    .tabs
+                    .iter()
+                    .map(|t| (t.id.clone(), t.title.clone(), t.url.clone(), t.is_suspended))
+                    .collect();
+                let bms = self.profile.storage.get_bookmarks().unwrap_or_default();
+                let hist = self.profile.storage.get_history(40).unwrap_or_default();
+                let suggs =
+                    build_omnibox_suggestions(q, &self.search_engine, &open_tabs, &bms, &hist);
+                if let Ok(json) = serde_json::to_string(&suggs) {
+                    let _ = self
+                        .chrome_wv
+                        .evaluate_script(&format!("window.applyOmniboxSuggestions({})", json));
+                }
+            }
             "navigate" => {
                 if let Some(u) = msg.payload.get("url").and_then(|v| v.as_str()) {
-                    let target = self.normalize_input_url(u);
-                    if validate_navigation_url(&target, self.allow_loopback_nav).is_ok() {
-                        if let Some(fid) = self.focused_tab_id() {
-                            if let Some(tab) = self.tabs.iter_mut().find(|t| t.id == fid) {
-                                tab.url = target.clone();
-                                if let Some(wv) = &tab.wv {
-                                    let _ = wv.load_url(&target);
-                                }
-                            }
-                        }
+                    if let Some(fid) = self.focused_tab_id() {
+                        self.navigate_tab_to(&fid, u);
                     }
-                    self.sync_ui();
+                }
+            }
+            "restart_proxy" => {
+                self.restart_proxy_fail_closed();
+            }
+            "duplicate_tab" => {
+                if let Some(id) = msg.payload.get("tab_id").and_then(|v| v.as_str()) {
+                    if let Some((u, incog)) = self
+                        .tabs
+                        .iter()
+                        .find(|t| t.id == id)
+                        .map(|t| (t.url.clone(), t.is_incognito))
+                    {
+                        self.open_new_tab(&u, incog, true);
+                    }
                 }
             }
             "nav_back" =>
@@ -926,7 +1511,7 @@ impl BrowserHost {
                     .demo_base_url
                     .as_ref()
                     .map(|b| format!("{}/home", b))
-                    .unwrap_or_else(|| "https://doc.rust-lang.org/".into());
+                    .unwrap_or_else(|| "about:home".into());
                 self.open_new_tab(&url, incog, true);
             }
             "select_tab" => {
@@ -1076,7 +1661,161 @@ impl BrowserHost {
                             category: "Général".into(),
                             created_at: now_ts(),
                         });
+                        self.set_toast("Favori enregistré");
                     }
+                    self.sync_ui();
+                }
+            }
+            "delete_permission" => {
+                let orig = msg.payload.get("origin").and_then(|v| v.as_str());
+                let perm = msg.payload.get("permission").and_then(|v| v.as_str());
+                if let (Some(o), Some(p)) = (orig, perm) {
+                    let _ = self.profile.storage.delete_domain_permission(o, p);
+                    self.set_toast("Permission réinitialisée");
+                    self.sync_ui();
+                }
+            }
+            "start_resumable_download" => {
+                if let Some(raw_url) = msg.payload.get("url").and_then(|v| v.as_str()) {
+                    let (target, dev_port) = resolve_omnibox_input(raw_url, &self.search_engine);
+                    if validate_navigation_with_origin(&target, NavigationOrigin::UserOmnibox)
+                        .is_ok()
+                        && self.proxy_running
+                    {
+                        if let Some(p) = dev_port {
+                            self.proxy.authorize_user_localhost_port(p);
+                        }
+                        let raw_name = url::Url::parse(&target)
+                            .ok()
+                            .and_then(|u| {
+                                u.path_segments()
+                                    .and_then(|mut s| s.next_back())
+                                    .map(ToString::to_string)
+                            })
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or_else(|| "download.bin".into());
+                        let safe_name = sanitize_filename(&raw_name);
+                        if let Ok(dest) = resolve_safe_destination(&self.download_dir, &safe_name) {
+                            let final_name = dest
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or(&safe_name)
+                                .to_string();
+                            let dl_id = self.gen_id("dl");
+                            let risk = classify_filename_risk(&final_name);
+                            let exec_warning =
+                                matches!(risk, DownloadSafetyRisk::ExecutableWarning { .. });
+                            let _ = self.profile.storage.upsert_download(&DownloadRecord {
+                                id: dl_id.clone(),
+                                url: target.clone(),
+                                filename: final_name.clone(),
+                                save_path: dest.to_string_lossy().to_string(),
+                                status: "En cours".into(),
+                                bytes_received: 0,
+                                total_bytes: 0,
+                                started_at: now_ts(),
+                            });
+                            self.live_downloads.insert(
+                                dl_id.clone(),
+                                LiveDownloadMeta {
+                                    resumable: true,
+                                    speed_bps: 0,
+                                    exec_warning,
+                                    error_message: None,
+                                },
+                            );
+                            let ctrl = Arc::new(DownloadControl::new());
+                            self.resumable_controls.insert(dl_id.clone(), ctrl.clone());
+                            self.start_resumable_download_task(
+                                dl_id, target, dest, final_name, ctrl,
+                            );
+                            self.set_toast("Téléchargement démarré");
+                            self.sync_ui();
+                        }
+                    } else {
+                        self.set_toast("URL bloquée ou proxy arrêté");
+                        self.sync_ui();
+                    }
+                }
+            }
+            "pause_download" => {
+                if let Some(id) = msg.payload.get("id").and_then(|v| v.as_str()) {
+                    if let Some(ctrl) = self.resumable_controls.get(id) {
+                        ctrl.pause();
+                        self.set_toast("Téléchargement en pause");
+                        self.sync_ui();
+                    }
+                }
+            }
+            "resume_download" => {
+                if let Some(id) = msg.payload.get("id").and_then(|v| v.as_str()) {
+                    if let Ok(list) = self.profile.storage.get_downloads() {
+                        if let Some(mut rec) = list.into_iter().find(|d| d.id == id) {
+                            rec.status = "En cours".into();
+                            let _ = self.profile.storage.upsert_download(&rec);
+                            let ctrl = Arc::new(DownloadControl::new());
+                            self.resumable_controls.insert(id.to_string(), ctrl.clone());
+                            self.start_resumable_download_task(
+                                rec.id,
+                                rec.url,
+                                PathBuf::from(&rec.save_path),
+                                rec.filename,
+                                ctrl,
+                            );
+                            self.set_toast("Téléchargement repris");
+                            self.sync_ui();
+                        }
+                    }
+                }
+            }
+            "cancel_download" => {
+                if let Some(id) = msg.payload.get("id").and_then(|v| v.as_str()) {
+                    if let Some(ctrl) = self.resumable_controls.get(id) {
+                        ctrl.cancel();
+                    }
+                    #[cfg(target_os = "linux")]
+                    if let Ok(map) = self.webkit_downloads.lock() {
+                        if let Some(wk_dl) = map.get(id) {
+                            wk_dl.cancel();
+                        }
+                    }
+                    if let Ok(list) = self.profile.storage.get_downloads() {
+                        if let Some(mut rec) = list.into_iter().find(|d| d.id == id) {
+                            rec.status = "Annulé".into();
+                            let _ = self.profile.storage.upsert_download(&rec);
+                        }
+                    }
+                    self.set_toast("Téléchargement annulé");
+                    self.sync_ui();
+                }
+            }
+            "open_download_file" | "open_download_folder" => {
+                if let Some(id) = msg.payload.get("id").and_then(|v| v.as_str()) {
+                    if let Ok(list) = self.profile.storage.get_downloads() {
+                        if let Some(rec) = list.into_iter().find(|d| d.id == id) {
+                            let target_path = if msg.cmd == "open_download_folder" {
+                                Path::new(&rec.save_path)
+                                    .parent()
+                                    .unwrap_or(self.download_dir.as_path())
+                                    .to_path_buf()
+                            } else {
+                                PathBuf::from(&rec.save_path)
+                            };
+                            #[cfg(target_os = "linux")]
+                            {
+                                let _ = std::process::Command::new("xdg-open")
+                                    .arg(&target_path)
+                                    .spawn();
+                            }
+                        }
+                    }
+                }
+            }
+            "delete_download" => {
+                if let Some(id) = msg.payload.get("id").and_then(|v| v.as_str()) {
+                    self.resumable_controls.remove(id);
+                    self.live_downloads.remove(id);
+                    let _ = self.profile.storage.delete_download(id);
                     self.sync_ui();
                 }
             }
@@ -1237,12 +1976,36 @@ impl BrowserHost {
             }
             "set_theme" => {
                 if let Some(th) = msg.payload.get("theme").and_then(|v| v.as_str()) {
-                    self.theme = if th == "light" {
-                        "light".into()
-                    } else {
-                        "dark".into()
+                    self.theme_pref = match th {
+                        "light" => "light".into(),
+                        "system" => "system".into(),
+                        _ => "dark".into(),
                     };
-                    let _ = self.profile.storage.set_setting("theme", &self.theme);
+                    let _ = self.profile.storage.set_setting("theme", &self.theme_pref);
+                    self.sync_ui();
+                }
+            }
+            "set_accent" => {
+                if let Some(acc) = msg.payload.get("accent").and_then(|v| v.as_str()) {
+                    if matches!(
+                        acc,
+                        "#0969da" | "#0f766e" | "#4f46e5" | "#b45309" | "#be123c"
+                    ) {
+                        self.accent = acc.to_string();
+                        let _ = self.profile.storage.set_setting("accent", &self.accent);
+                        self.sync_ui();
+                    }
+                }
+            }
+            "set_density" => {
+                if let Some(d) = msg.payload.get("density").and_then(|v| v.as_str()) {
+                    self.density = if d == "compact" {
+                        "compact".into()
+                    } else {
+                        "comfortable".into()
+                    };
+                    let _ = self.profile.storage.set_setting("density", &self.density);
+                    self.relayout();
                     self.sync_ui();
                 }
             }
@@ -1256,6 +2019,41 @@ impl BrowserHost {
                     self.sync_ui();
                 }
             }
+            "create_profile" => {
+                if let Some(name) = msg.payload.get("name").and_then(|v| v.as_str()) {
+                    if self.registry.create_profile(name).is_ok() {
+                        self.set_toast("Nouveau profil créé");
+                        self.sync_ui();
+                    }
+                }
+            }
+            "set_startup_profile" => {
+                if let Some(id) = msg.payload.get("id").and_then(|v| v.as_str()) {
+                    if self.registry.set_startup_profile(id).is_ok() {
+                        self.set_toast("Profil de démarrage mis à jour");
+                        self.sync_ui();
+                    }
+                }
+            }
+            "delete_profile" => {
+                if let Some(id) = msg.payload.get("id").and_then(|v| v.as_str()) {
+                    if id != self.profile.record.id && self.registry.delete_profile(id).is_ok() {
+                        self.set_toast("Profil supprimé du disque");
+                        self.sync_ui();
+                    }
+                }
+            }
+            "launch_profile" => {
+                if let Some(id) = msg.payload.get("id").and_then(|v| v.as_str()) {
+                    if let Ok(exe) = std::env::current_exe() {
+                        let _ = std::process::Command::new(exe)
+                            .args(["--profile", id])
+                            .spawn();
+                        self.set_toast("Fenêtre profil ouverte");
+                        self.sync_ui();
+                    }
+                }
+            }
             "purge_profile_data" => {
                 for t in &self.tabs {
                     if let Some(wv) = &t.wv {
@@ -1263,6 +2061,7 @@ impl BrowserHost {
                     }
                 }
                 let _ = self.profile.purge_all_local_data();
+                self.set_toast("Données locales du profil purgées");
                 self.sync_ui();
             }
             _ => {}
@@ -1281,7 +2080,13 @@ fn capture_screenshot(dir: &Path, filename: &str) {
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let verify_mode = args.iter().any(|a| a == "--verify");
+    let verify_phase5 = args.iter().any(|a| a == "--verify-phase5");
+    let any_verify = verify_mode || verify_phase5;
     let bench_mode = args.iter().any(|a| a == "--bench");
+    let cli_profile = args
+        .windows(2)
+        .find(|w| w[0] == "--profile")
+        .map(|w| w[1].clone());
     let capture_dir = args
         .windows(2)
         .find(|w| w[0] == "--capture-dir")
@@ -1296,22 +2101,38 @@ fn main() {
             .find(|w| w[0] == "--runs")
             .and_then(|w| w[1].parse::<usize>().ok())
             .unwrap_or(3);
+        let bench_out = args
+            .windows(2)
+            .find(|w| w[0] == "--bench-out")
+            .map(|w| PathBuf::from(&w[1]));
         let (proxy, rx) = SecureLoopbackProxy::new(ProxyConfig::default(), shield.clone());
         let addr = rt.block_on(proxy.start(rx)).expect("bench proxy");
-        bench::run_memory_benchmark_suite(addr.port(), runs);
+        bench::run_memory_benchmark_suite(addr.port(), runs, bench_out);
         proxy.shutdown();
         return;
     }
 
-    let base_data_dir = if verify_mode {
+    let base_data_dir = if any_verify {
         tempfile::tempdir().expect("verify profile tempdir").keep()
     } else {
         let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
         PathBuf::from(home).join(".local/share/orakle-browser")
     };
 
-    let profile = ProfileContext::open_persistent(&base_data_dir, "default", "Profil Principal")
-        .expect("open default profile");
+    let registry = ProfileRegistry::load_or_init(&base_data_dir).expect("profile registry");
+    let active_profile_id =
+        cli_profile.unwrap_or_else(|| registry.startup_profile_id().to_string());
+    let active_profile_name = registry
+        .list_profiles()
+        .into_iter()
+        .find(|p| p.id == active_profile_id)
+        .map(|p| p.name)
+        .unwrap_or_else(|| "Profil Principal".to_string());
+    let profile =
+        ProfileContext::open_persistent(&base_data_dir, &active_profile_id, &active_profile_name)
+            .expect("open active profile");
+    let _ = registry.save();
+
     let spaces = match profile.storage.get_spaces() {
         Ok(v) if !v.is_empty() => v,
         _ => {
@@ -1331,8 +2152,8 @@ fn main() {
     std::env::set_var("ORAKLE_SHIELD_RULES_FILE", &rules_file_path);
     let ext_dir_opt = find_webkit_extension_dir(&profile.root_dir);
 
-    let (demo_addr_opt, proxy_addr, proxy) = rt.block_on(async {
-        let demo = if verify_mode {
+    let (demo_addr_opt, proxy_cfg, proxy_addr, proxy) = rt.block_on(async {
+        let demo = if any_verify {
             Some(spawn_local_demo_server().await)
         } else {
             None
@@ -1342,9 +2163,10 @@ fn main() {
             cfg.allowed_ports = vec![80, 443, 8080, d.port()];
             cfg.allow_loopback_upstream = true;
         }
+        let cfg_clone = cfg.clone();
         let (proxy, rx) = SecureLoopbackProxy::new(cfg, shield.clone());
         let addr = proxy.start(rx).await.expect("start loopback proxy");
-        (demo, addr, Arc::new(proxy))
+        (demo, cfg_clone, addr, Arc::new(proxy))
     });
 
     let download_dir = profile.root_dir.join("downloads");
@@ -1374,7 +2196,7 @@ fn main() {
     let chrome_ipc = event_proxy.clone();
     let chrome_builder = WebViewBuilder::new()
         .with_html(CHROME_HTML)
-        .with_bounds(make_rect(0, 0, 1360, TOP_BASE_HEIGHT))
+        .with_bounds(make_rect(0, 0, 1360, 86))
         .with_navigation_handler(|u| u == "about:blank")
         .with_ipc_handler(move |req| {
             let _ = chrome_ipc.send_event(UserEvent::IpcCommand(req.body().to_string()));
@@ -1389,15 +2211,15 @@ fn main() {
         .build_as_child(&window)
         .expect("build chrome_wv");
 
+    #[cfg(target_os = "linux")]
+    if let Some(c) = chrome_wv.webview().web_context() {
+        c.set_cache_model(CacheModel::DocumentViewer);
+    }
+
     let panel_ipc = event_proxy.clone();
     let panel_builder = WebViewBuilder::new()
         .with_html(PANEL_HTML)
-        .with_bounds(make_rect(
-            1000,
-            TOP_BASE_HEIGHT,
-            PANEL_WIDTH,
-            860 - TOP_BASE_HEIGHT,
-        ))
+        .with_bounds(make_rect(1000, 86, PANEL_WIDTH, 860 - 86))
         .with_navigation_handler(|u| u == "about:blank")
         .with_ipc_handler(move |req| {
             let _ = panel_ipc.send_event(UserEvent::IpcCommand(req.body().to_string()));
@@ -1413,12 +2235,29 @@ fn main() {
         .expect("build panel_wv");
     let _ = panel_wv.set_visible(false);
 
+    #[cfg(target_os = "linux")]
+    if let Some(c) = panel_wv.webview().web_context() {
+        c.set_cache_model(CacheModel::DocumentViewer);
+    }
+
     let saved_theme = profile
         .storage
         .get_setting("theme")
         .ok()
         .flatten()
         .unwrap_or_else(|| "dark".into());
+    let saved_accent = profile
+        .storage
+        .get_setting("accent")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "#0969da".into());
+    let saved_density = profile
+        .storage
+        .get_setting("density")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "comfortable".into());
     let saved_search = profile
         .storage
         .get_setting("search_engine")
@@ -1429,11 +2268,16 @@ fn main() {
     let demo_base_url = demo_addr_opt.map(|d| format!("http://{}", d));
     let mut host = BrowserHost {
         rt,
+        base_data_dir,
+        registry,
         profile,
         private_session: None,
         shield,
         proxy,
+        proxy_cfg,
         proxy_port: proxy_addr.port(),
+        proxy_running: true,
+        proxy_running_flag: Arc::new(AtomicBool::new(true)),
         rules_file_path,
         ext_dir_opt: ext_dir_opt.clone(),
         download_dir,
@@ -1458,19 +2302,79 @@ fn main() {
         sync_scroll: false,
         panel_open: false,
         panel_section: "shield".into(),
-        theme: saved_theme,
+        chrome_overlay_h: 0,
+        theme_pref: saved_theme,
+        accent: saved_accent,
+        density: saved_density,
+        toast: None,
         search_engine: saved_search,
         last_pulse: None,
+        live_downloads: HashMap::new(),
+        resumable_controls: HashMap::new(),
+        #[cfg(target_os = "linux")]
+        webkit_downloads: Arc::new(Mutex::new(HashMap::new())),
+        download_ctx_hooked: HashSet::new(),
+        authorized_localhost_origins: Arc::new(Mutex::new(HashMap::new())),
         win_w: 1360,
         win_h: 860,
         next_id: 0,
     };
 
-    let initial_url = demo_base_url
-        .as_ref()
-        .map(|b| format!("{}/home", b))
-        .unwrap_or_else(|| "https://doc.rust-lang.org/".into());
-    host.open_new_tab(&initial_url, false, true);
+    let restored_tabs = if !any_verify {
+        host.profile
+            .storage
+            .get_tabs_for_space(&host.active_space_id)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+
+    if restored_tabs.is_empty() {
+        let initial_url = demo_base_url
+            .as_ref()
+            .map(|b| format!("{}/home", b))
+            .unwrap_or_else(|| "about:home".into());
+        host.open_new_tab(&initial_url, false, true);
+    } else {
+        let last_idx = restored_tabs.len() - 1;
+        for (i, r) in restored_tabs.into_iter().enumerate() {
+            if i == last_idx {
+                host.authorize_user_localhost(&r.id, &r.url);
+                let wv = host.create_webview_for_tab(&r.id, &r.url, false);
+                host.tabs.push(TabItem {
+                    id: r.id.clone(),
+                    space_id: r.space_id,
+                    group_id: r.group_id,
+                    url: r.url,
+                    title: r.title,
+                    is_pinned: r.is_pinned,
+                    is_suspended: false,
+                    is_incognito: false,
+                    is_loading: true,
+                    is_playing_audio: false,
+                    wv: Some(wv),
+                });
+                host.left_tab_id = Some(r.id);
+            } else {
+                // Les onglets inactifs restaurés démarrent suspendus pour optimiser mémoire et latence
+                host.tabs.push(TabItem {
+                    id: r.id,
+                    space_id: r.space_id,
+                    group_id: r.group_id,
+                    url: r.url,
+                    title: r.title,
+                    is_pinned: r.is_pinned,
+                    is_suspended: true,
+                    is_incognito: false,
+                    is_loading: false,
+                    is_playing_audio: false,
+                    wv: None,
+                });
+            }
+        }
+        host.relayout();
+        host.sync_ui();
+    }
 
     if verify_mode {
         let vp = event_proxy.clone();
@@ -1485,6 +2389,15 @@ fn main() {
             let _ = vp.send_event(UserEvent::VerifyStep(4));
             std::thread::sleep(Duration::from_millis(1600));
             let _ = vp.send_event(UserEvent::VerifyStep(5));
+        });
+    } else if verify_phase5 {
+        let vp = event_proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2200));
+            for step in 1..=7 {
+                let _ = vp.send_event(UserEvent::VerifyPhase5Step(step));
+                std::thread::sleep(Duration::from_millis(1600));
+            }
         });
     }
 
@@ -1540,16 +2453,20 @@ fn main() {
             }
             Event::UserEvent(UserEvent::WebUriChanged { tab_id, uri }) => {
                 if let Some(idx) = host.tabs.iter().position(|t| t.id == tab_id) {
-                    host.tabs[idx].url = uri.clone();
-                    if !host.tabs[idx].is_incognito && uri != "about:blank" {
-                        let _ = host.profile.storage.insert_history_entry(&HistoryEntry {
-                            id: None,
-                            url: uri,
-                            title: host.tabs[idx].title.clone(),
-                            visited_at: now_ts(),
-                        });
+                    if uri == "about:blank" && host.tabs[idx].url != "about:blank" {
+                        // Préserver l'URL cible lors d'un chargement HTML local (erreur ou accueil)
+                    } else {
+                        host.tabs[idx].url = uri.clone();
+                        if !host.tabs[idx].is_incognito && uri != "about:blank" {
+                            let _ = host.profile.storage.insert_history_entry(&HistoryEntry {
+                                id: None,
+                                url: uri,
+                                title: host.tabs[idx].title.clone(),
+                                visited_at: now_ts(),
+                            });
+                        }
+                        host.sync_ui();
                     }
-                    host.sync_ui();
                 }
             }
             Event::UserEvent(UserEvent::WebLoadingChanged { tab_id, loading }) => {
@@ -1564,8 +2481,22 @@ fn main() {
                     host.sync_ui();
                 }
             }
-            Event::UserEvent(UserEvent::NativeAdapterBlocked { url }) => {
-                host.proxy.record_native_adapter_block(&url, None);
+            Event::UserEvent(UserEvent::NativeAdapterBlocked {
+                url,
+                resource_type,
+                rule,
+            }) => {
+                host.proxy
+                    .record_native_adapter_block_detailed(&url, &resource_type, rule);
+                host.sync_ui();
+            }
+            Event::UserEvent(UserEvent::WebPermissionDenied { origin, permission }) => {
+                let _ = host.profile.storage.set_domain_permission(&DomainPermission {
+                    origin,
+                    permission,
+                    decision: "blocked".into(),
+                    updated_at: now_ts(),
+                });
                 host.sync_ui();
             }
             Event::UserEvent(UserEvent::DownloadStarted {
@@ -1575,23 +2506,99 @@ fn main() {
                 save_path,
             }) => {
                 let _ = host.profile.storage.upsert_download(&DownloadRecord {
-                    id,
+                    id: id.clone(),
                     url,
-                    filename,
+                    filename: filename.clone(),
                     save_path,
                     status: "En cours".into(),
                     bytes_received: 0,
+                    total_bytes: 0,
                     started_at: now_ts(),
                 });
+                host.live_downloads.insert(
+                    id,
+                    LiveDownloadMeta {
+                        resumable: false,
+                        speed_bps: 0,
+                        exec_warning: matches!(
+                            classify_filename_risk(&filename),
+                            DownloadSafetyRisk::ExecutableWarning { .. }
+                        ),
+                        error_message: None,
+                    },
+                );
                 host.sync_ui();
             }
             Event::UserEvent(UserEvent::DownloadCompleted { url, success }) => {
                 if let Ok(list) = host.profile.storage.get_downloads() {
                     if let Some(mut d) = list.into_iter().find(|d| d.url == url) {
-                        d.status = if success { "Terminé".into() } else { "Échec".into() };
+                        if let Ok(meta) = fs::metadata(&d.save_path) {
+                            d.bytes_received = meta.len() as i64;
+                            if d.total_bytes <= 0 {
+                                d.total_bytes = d.bytes_received;
+                            }
+                        }
+                        d.status = if success {
+                            "Terminé".into()
+                        } else {
+                            "Échec".into()
+                        };
                         let _ = host.profile.storage.upsert_download(&d);
+                        if success {
+                            host.set_toast(format!("Téléchargement terminé : {}", d.filename));
+                        }
                     }
                 }
+                host.sync_ui();
+            }
+            Event::UserEvent(UserEvent::DownloadProgress {
+                id,
+                url,
+                filename,
+                save_path,
+                received_bytes,
+                total_bytes,
+                speed_bps,
+                status,
+                error_message,
+            }) => {
+                let exec_warning = matches!(
+                    classify_filename_risk(&filename),
+                    DownloadSafetyRisk::ExecutableWarning { .. }
+                );
+                host.live_downloads.insert(
+                    id.clone(),
+                    LiveDownloadMeta {
+                        resumable: true,
+                        speed_bps,
+                        exec_warning,
+                        error_message: error_message.clone(),
+                    },
+                );
+                let existing_ts = host
+                    .profile
+                    .storage
+                    .get_downloads()
+                    .ok()
+                    .and_then(|l| l.into_iter().find(|d| d.id == id).map(|d| d.started_at))
+                    .unwrap_or_else(now_ts);
+                let _ = host.profile.storage.upsert_download(&DownloadRecord {
+                    id: id.clone(),
+                    url,
+                    filename: filename.clone(),
+                    save_path,
+                    status: status.clone(),
+                    bytes_received: received_bytes as i64,
+                    total_bytes: total_bytes as i64,
+                    started_at: existing_ts,
+                });
+                if status == "Terminé" {
+                    host.resumable_controls.remove(&id);
+                    host.set_toast(format!("Téléchargement terminé : {}", filename));
+                } else if status == "Échec" || status == "Annulé" {
+                    host.resumable_controls.remove(&id);
+                }
+                let _ = DL_STATE_PAUSED;
                 host.sync_ui();
             }
             Event::UserEvent(UserEvent::PulseCompleted(p)) => {
@@ -1655,7 +2662,7 @@ fn main() {
                     host.split_ratio = 0.70;
                     std::mem::swap(&mut host.left_tab_id, &mut host.right_tab_id);
                     host.focused_pane = "right".into();
-                    host.theme = "light".into();
+                    host.theme_pref = "light".into();
                     let _ = host.profile.storage.set_setting("theme", "light");
                     host.panel_section = "spaces".into();
                     host.relayout();
@@ -1714,6 +2721,198 @@ fn main() {
                 }
                 _ => {}
             },
+            Event::UserEvent(UserEvent::VerifyPhase5Step(step)) => {
+                let demo = host
+                    .demo_base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://127.0.0.1:8080".into());
+                match step {
+                    1 => {
+                        // Capture Accueil sombre stabilisée -> ouvrir HTTP /page2 + Favori + Bang + préparer dropdown Omnibox
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "p5-01-dark-home.png");
+                        }
+                        let p2_url = format!("{}/page2", demo);
+                        let new_id = host.open_new_tab(&p2_url, false, true);
+                        let bm_id = host.gen_id("bm");
+                        let _ = host.profile.storage.upsert_bookmark(&BookmarkEntry {
+                            id: bm_id,
+                            url: p2_url.clone(),
+                            title: "Page 2 Demo".into(),
+                            category: "Validation".into(),
+                            created_at: now_ts(),
+                        });
+                        let (bang_url, _) = resolve_omnibox_input("!gh orakle", &host.search_engine);
+                        assert!(bang_url.contains("github.com/search"));
+
+                        host.chrome_overlay_h = 190;
+                        host.relayout();
+                        let open_tabs: Vec<(String, String, String, bool)> = host
+                            .tabs
+                            .iter()
+                            .map(|t| (t.id.clone(), t.title.clone(), t.url.clone(), t.is_suspended))
+                            .collect();
+                        let bms = host.profile.storage.get_bookmarks().unwrap_or_default();
+                        let hist = host.profile.storage.get_history(40).unwrap_or_default();
+                        let suggs = build_omnibox_suggestions(
+                            "page",
+                            &host.search_engine,
+                            &open_tabs,
+                            &bms,
+                            &hist,
+                        );
+                        if let Ok(json) = serde_json::to_string(&suggs) {
+                            let _ = host.chrome_wv.evaluate_script(&format!(
+                                "var oi=document.getElementById('urlInput');if(oi){{oi.focus();oi.value='page';}}window.applyOmniboxSuggestions({});",
+                                json
+                            ));
+                        }
+                        println!(
+                            "[P5 STEP 1] Onglet HTTP ouvert ({}), Favori ajouté, Bang !gh résolu -> {}, Omnibox suggestions={}",
+                            new_id, bang_url, suggs.len()
+                        );
+                    }
+                    2 => {
+                        // Capture Omnibox Dropdown stabilisé -> fermer overlay -> back/forward/reload -> Split View 70/30 + Shield
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "p5-02-omnibox-dropdown.png");
+                        }
+                        host.chrome_overlay_h = 0;
+                        let _ = host
+                            .chrome_wv
+                            .evaluate_script("window.closeOverlays && window.closeOverlays(); var oi=document.getElementById('urlInput'); if(oi) oi.blur();");
+                        if let Some(wv) = host
+                            .focused_tab_id()
+                            .and_then(|id| host.tabs.iter().find(|t| t.id == id))
+                            .and_then(|t| t.wv.as_ref())
+                        {
+                            let _ = wv.evaluate_script("history.back(); history.forward(); location.reload();");
+                        }
+                        let left_u = format!("{}/left", demo);
+                        let right_u = format!("{}/right", demo);
+                        if let Some(lid) = host.left_tab_id.clone() {
+                            host.navigate_tab_to(&lid, &left_u);
+                        }
+                        let rid = host.open_new_tab(&right_u, false, false);
+                        host.right_tab_id = Some(rid);
+                        host.split_active = true;
+                        host.split_ratio = 0.70;
+                        host.panel_open = true;
+                        host.panel_section = "shield".into();
+                        host.relayout();
+                        host.sync_ui();
+                        println!("[P5 STEP 2] Nav Back/Forward/Reload + Split View 70/30 + Shield actif");
+                    }
+                    3 => {
+                        // Capture Split View 70/30 + Shield -> basculer Thème Clair + Compact + Historique
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "p5-03-split-shield.png");
+                        }
+                        host.theme_pref = "light".into();
+                        host.density = "compact".into();
+                        host.accent = "indigo".into();
+                        host.panel_open = true;
+                        host.panel_section = "history".into();
+                        let _ = host.profile.storage.set_setting("theme", "light");
+                        let _ = host.profile.storage.set_setting("density", "compact");
+                        let _ = host.profile.storage.set_setting("accent", "indigo");
+                        host.relayout();
+                        host.sync_ui();
+                        println!("[P5 STEP 3] Thème clair + densité compact + historique");
+                    }
+                    4 => {
+                        // Capture Light + Compact + Historique -> Téléchargement résumable /download-test.bin
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "p5-04-light-history.png");
+                        }
+                        host.split_active = false;
+                        host.panel_open = true;
+                        host.panel_section = "downloads".into();
+                        let dl_url = format!("{}/download-test.bin", demo);
+                        host.handle_ipc(&format!(
+                            "{{\"cmd\":\"start_resumable_download\",\"payload\":{{\"url\":\"{}\"}}}}",
+                            dl_url
+                        ));
+                        host.relayout();
+                        host.sync_ui();
+                        println!("[P5 STEP 4] Téléchargement résumable démarré ({})", dl_url);
+                    }
+                    5 => {
+                        // Capture Downloads terminé -> Créer profil + Proxy Fail-Closed Outage + Panneau Profils
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "p5-05-downloads.png");
+                        }
+                        let _ = host.registry.create_profile("Profil Test P5");
+                        host.shutdown_proxy_fail_closed();
+                        host.panel_open = true;
+                        host.panel_section = "profiles".into();
+                        host.relayout();
+                        host.sync_ui();
+                        println!("[P5 STEP 5] Proxy Fail-Closed activé + Profils affichés");
+                    }
+                    6 => {
+                        // Capture Panne Proxy + Profils -> Redémarrer Proxy + Page d'erreur native (port éphemère fermé)
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "p5-06-proxy-outage-profiles.png");
+                        }
+                        host.restart_proxy_fail_closed();
+                        host.panel_open = false;
+                        let closed_port = std::net::TcpListener::bind("127.0.0.1:0")
+                            .ok()
+                            .and_then(|l| l.local_addr().ok())
+                            .map(|a| a.port())
+                            .unwrap_or(59999);
+                        let err_target = format!("https://127.0.0.1:{}/unreachable", closed_port);
+                        if let Some(fid) = host.focused_tab_id() {
+                            host.navigate_tab_to(&fid, &err_target);
+                        }
+                        host.relayout();
+                        host.sync_ui();
+                        println!("[P5 STEP 6] Proxy redémarré + déclenchement page d'erreur native ({})", err_target);
+                    }
+                    7 => {
+                        // Capture Page d'erreur stabilisée -> Fermer/Rouvrir onglet + Save session + Bilan
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "p5-07-error-page.png");
+                        }
+                        if host.tabs.len() >= 2 {
+                            let to_close = host.tabs[0].id.clone();
+                            host.close_tab(&to_close);
+                            assert!(!host.closed_tabs.is_empty());
+                            host.handle_ipc("{\"cmd\":\"reopen_closed\",\"payload\":{}}");
+                        }
+                        host.handle_ipc("{\"cmd\":\"save_session\",\"payload\":{\"name\":\"Session Phase 5\"}}");
+                        let tabs_db = host
+                            .profile
+                            .storage
+                            .get_tabs_for_space(&host.active_space_id)
+                            .unwrap_or_default();
+                        let bms_db = host.profile.storage.get_bookmarks().unwrap_or_default();
+                        let hist_db = host.profile.storage.get_history(50).unwrap_or_default();
+                        let dls_db = host.profile.storage.get_downloads().unwrap_or_default();
+                        let sessions_db = host.profile.storage.get_sessions().unwrap_or_default();
+                        let s = metrics::capture_memory_cpu_snapshot();
+                        println!(
+                            "[P5 STEP 7 — BILAN FINAL] tabs_open={} tabs_db={} bookmarks={} history={} downloads={} sessions={} profiles={} rss_mib={:.1} pss_mib={:.1}",
+                            host.tabs.len(),
+                            tabs_db.len(),
+                            bms_db.len(),
+                            hist_db.len(),
+                            dls_db.len(),
+                            sessions_db.len(),
+                            host.registry.list_profiles().len(),
+                            s.total_rss_kb as f64 / 1024.0,
+                            s.total_pss_kb as f64 / 1024.0
+                        );
+                        if let Some(priv_sess) = host.private_session.take() {
+                            let _ = priv_sess.cleanup();
+                        }
+                        host.proxy.shutdown();
+                        *control_flow = ControlFlow::Exit;
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
     });

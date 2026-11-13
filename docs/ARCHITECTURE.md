@@ -1,7 +1,7 @@
 # Orakle Browser — Spécification d'Architecture Technique
 
 - **Version** : 2.0.0
-- **Statut** : Document d'architecture de référence (aligné Phase 4)
+- **Statut** : Document d'architecture de référence (aligné Phase 5)
 - **Dernière mise à jour** : 2026-11-13
 
 ---
@@ -88,17 +88,19 @@ flowchart TD
 
 ### D. Hôte Natif `orakle-app` (`tao 0.37` + `wry 0.57`)
 - **Responsabilités** :
-  - Fenêtre native multi-WebViews (Chrome UI + Split View 50/50 avec volet droit incognito via `with_incognito(true)`), routage forcé sur `SecureLoopbackProxy` (`ProxyConfig::Http`).
-  - Sous Linux X11/Wayland : montage via `gtk::Fixed` + `WebViewBuilderExtUnix::build_gtk` et redimensionnement dynamique `set_bounds`.
-  - Suspension réelle des volets/onglets (destruction de l'instance `WebView` et libération du `WebKitWebProcess` associé : **-181,7 Mio `VmRSS`** mesuré dans `orakle-app --verify`) avec sauvegarde/restauration d'état depuis `Storage`.
+  - Fenêtre native multi-WebViews (Chrome UI + Split View 30/70, 50/50, 70/30 avec volet droit incognito via `with_incognito(true)`), routage forcé sur `SecureLoopbackProxy` (`ProxyConfig::Http`).
+  - Sous Linux X11/Wayland : montage via `gtk::Fixed` + `WebViewBuilderExtUnix::build_gtk`, dimensionnement `LogicalSize`/`PhysicalSize` tenant compte de `scale_factor()`, et terminaison explicite du processus moteur (`terminate_web_process()` + `fixed.remove`) à la fermeture/suspension des onglets (zéro fuite de `WebKitWebProcess` vérifiée sur 30 passes).
+  - Gestion complète des téléchargements résumables (`Range` / `206`, pause/reprise/annulation, classification des extensions sans faux AV) via `orakle_core::downloads`.
+  - Isolation des profils (`ProfileRegistry` / `ProfileContext`) et sessions privées éphémères (`PrivateSession` avec purge disque à la fermeture).
+  - Pages d'erreur natives injectées hors-bande (`load_html` sur `idle_add_local_once` via `pages::classify_webkit_error` + `proxy_running_flag` partagé), sans mascarade ni repli silencieux hors proxy.
 
 ---
 
 ## 4. Stratégie de Gestion des Erreurs et Résilience
 
-1. **Résistance aux Plantages de Page** :
-   Un crash de processus WebKit ou Chromium dans un onglet n'entraîne pas la fermeture du navigateur. Le conteneur affiche une page d'erreur conviviale permettant de recharger l'onglet en un clic.
-2. **Gestion Hors-Ligne** :
-   Détection de la perte de connectivité réseau avec affichage d'un état propre et conservation des onglets pour rechargement automatique dès le retour du réseau.
+1. **Résistance aux Erreurs Réseau & Plantages de Page** :
+   Un échec DNS/TLS/connexion ou un plantage de processus WebKit dans un onglet n'entraîne pas la fermeture du navigateur. `orakle-app::pages` classe l'erreur (incluant la panne proxy `ProxyUnavailable` basée sur l'état réel `proxy_running_flag`) et affiche une page locale informative avec actions de réessai ou rétablissement du proxy.
+2. **Politique Fail-Closed & Alertes Explicites** :
+   En cas d'arrêt du proxy loopback (`proxy_running_flag = false`), l'interface Chrome affiche une bannière rouge explicite avec bouton de redémarrage immédiat et bloque toute navigation silencieuse directe.
 3. **Sauvegarde Atomique** :
-   Toutes les écritures de préférences ou de sessions sont effectuées par renommage atomique (`write to temp file then rename`) pour éviter toute corruption de données en cas d'extinction brutale du poste.
+   Les préférences, sessions SQLite WAL et profils multi-comptes (`ProfileRegistry`) garantissent la cohérence au redémarrage sans corruption en cas d'arrêt brutal.

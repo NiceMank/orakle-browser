@@ -1,7 +1,7 @@
-use std::time::Instant;
-use rusqlite::{params, Connection};
 use adblock::engine::Engine;
 use adblock::request::Request;
+use rusqlite::{params, Connection};
+use std::time::Instant;
 
 fn main() {
     println!("============================================================");
@@ -49,17 +49,63 @@ fn test_adblock_engine() {
     let engine = Engine::new_with_list_text(rules_text);
     let parse_duration = t_parse_start.elapsed();
 
-    println!("  [OK] Initialisation du moteur avec {} règles en {:?}", sample_rules.len(), parse_duration);
+    println!(
+        "  [OK] Initialisation du moteur avec {} règles en {:?}",
+        sample_rules.len(),
+        parse_duration
+    );
 
     // Cas de tests réalistes
     let test_cases = vec![
-        ("https://googleads.g.doubleclick.net/pagead/ads?client=ca-pub-123", "script", "https://lemonde.fr", true, "Publicité DoubleClick"),
-        ("https://www.google-analytics.com/analytics.js", "script", "https://example.com", true, "Traqueur Google Analytics"),
-        ("https://connect.facebook.net/en_US/sdk.js", "script", "https://shopping.com", true, "Pixel de pistage Meta"),
-        ("https://criteo.com/delivery/ajs.php", "script", "https://ecommerce.fr", true, "Régie publicitaire Criteo"),
-        ("https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html", "main_frame", "https://doc.rust-lang.org", false, "Page bénigne documentation Rust"),
-        ("https://doc.rust-lang.org/css/normalize.css", "stylesheet", "https://doc.rust-lang.org", false, "Feuille de style légitime"),
-        ("https://crates.io/api/v1/crates/rusqlite", "xmlhttprequest", "https://crates.io", false, "Requête API légitime"),
+        (
+            "https://googleads.g.doubleclick.net/pagead/ads?client=ca-pub-123",
+            "script",
+            "https://lemonde.fr",
+            true,
+            "Publicité DoubleClick",
+        ),
+        (
+            "https://www.google-analytics.com/analytics.js",
+            "script",
+            "https://example.com",
+            true,
+            "Traqueur Google Analytics",
+        ),
+        (
+            "https://connect.facebook.net/en_US/sdk.js",
+            "script",
+            "https://shopping.com",
+            true,
+            "Pixel de pistage Meta",
+        ),
+        (
+            "https://criteo.com/delivery/ajs.php",
+            "script",
+            "https://ecommerce.fr",
+            true,
+            "Régie publicitaire Criteo",
+        ),
+        (
+            "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+            "main_frame",
+            "https://doc.rust-lang.org",
+            false,
+            "Page bénigne documentation Rust",
+        ),
+        (
+            "https://doc.rust-lang.org/css/normalize.css",
+            "stylesheet",
+            "https://doc.rust-lang.org",
+            false,
+            "Feuille de style légitime",
+        ),
+        (
+            "https://crates.io/api/v1/crates/rusqlite",
+            "xmlhttprequest",
+            "https://crates.io",
+            false,
+            "Requête API légitime",
+        ),
     ];
 
     println!("\n  Vérification unitaire des correspondances :");
@@ -74,7 +120,11 @@ fn test_adblock_engine() {
             url, expected_blocked, is_blocked
         );
 
-        let status = if is_blocked { "BLOQUÉ [✓]" } else { "AUTORISÉ [✓]" };
+        let status = if is_blocked {
+            "BLOQUÉ [✓]"
+        } else {
+            "AUTORISÉ [✓]"
+        };
         println!("    {} {} — {}", status, description, url);
     }
 
@@ -91,10 +141,19 @@ fn test_adblock_engine() {
     let total_elapsed = t_bench_start.elapsed();
     let avg_micros = total_elapsed.as_nanos() as f64 / (iterations as f64 * 1000.0);
 
-    println!("    • Total : {:?} pour {} vérifications", total_elapsed, iterations);
-    println!("    • Vitesse moyenne mesurée : {:.3} µs par requête", avg_micros);
+    println!(
+        "    • Total : {:?} pour {} vérifications",
+        total_elapsed, iterations
+    );
+    println!(
+        "    • Vitesse moyenne mesurée : {:.3} µs par requête",
+        avg_micros
+    );
     assert!(avg_micros < 50.0, "Le temps de filtrage doit être < 50 µs");
-    println!("    • Objectif < 50 µs : VÉRIFIÉ ET ATTEINT ({:.3} µs)", avg_micros);
+    println!(
+        "    • Objectif < 50 µs : VÉRIFIÉ ET ATTEINT ({:.3} µs)",
+        avg_micros
+    );
 }
 
 fn test_sqlite_persistence() {
@@ -147,17 +206,21 @@ fn test_sqlite_persistence() {
              category TEXT NOT NULL,
              created_at INTEGER NOT NULL
          );",
-    ).expect("Échec de création du schéma SQLite");
+    )
+    .expect("Échec de création du schéma SQLite");
 
     println!("  [OK] Schéma structuré V2 créé avec intégrité référentielle et index.");
 
     // 2. Test des transactions ACID : insertion atomique
     {
-        let tx = conn.transaction().expect("Échec d'ouverture de transaction");
+        let tx = conn
+            .transaction()
+            .expect("Échec d'ouverture de transaction");
         tx.execute(
             "INSERT INTO spaces (id, name, color, created_at) VALUES (?1, ?2, ?3, ?4)",
             params!["space-work", "Travail & Dév", "#2f81f7", 1731300000],
-        ).unwrap();
+        )
+        .unwrap();
 
         tx.execute(
             "INSERT INTO tabs (id, space_id, url, title, is_pinned, is_suspended, position, last_active_at)
@@ -176,9 +239,14 @@ fn test_sqlite_persistence() {
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params!["tab-2", "space-inconnu", "https://bad.com", "Bad", 0, 0, 1, 1731300200], // Clé étrangère invalide !
         );
-        assert!(res.is_err(), "L'intégrité de clé étrangère aurait dû rejeter l'insertion");
+        assert!(
+            res.is_err(),
+            "L'intégrité de clé étrangère aurait dû rejeter l'insertion"
+        );
         let _ = tx.rollback();
-        println!("  [OK] Rollback ACID vérifié : rejet des contraintes orphelines sans corruption.");
+        println!(
+            "  [OK] Rollback ACID vérifié : rejet des contraintes orphelines sans corruption."
+        );
     }
 
     // 4. Benchmark d'insertion en masse (1 000 visites d'historique)
@@ -186,25 +254,34 @@ fn test_sqlite_persistence() {
     {
         let tx = conn.transaction().expect("Échec transaction batch");
         {
-            let mut stmt = tx.prepare_cached(
-                "INSERT INTO history (url, title, visited_at) VALUES (?1, ?2, ?3)"
-            ).unwrap();
+            let mut stmt = tx
+                .prepare_cached("INSERT INTO history (url, title, visited_at) VALUES (?1, ?2, ?3)")
+                .unwrap();
 
             for i in 0..1000 {
                 stmt.execute(params![
                     format!("https://example.com/page-{}", i),
                     format!("Example Page {}", i),
                     1731300000 + i
-                ]).unwrap();
+                ])
+                .unwrap();
             }
         }
         tx.commit().expect("Commit batch réussi");
     }
     let duration = t_start.elapsed();
-    println!("  [OK] Benchmark : 1 000 entrées d'historique insérées en {:?}", duration);
-    println!("       Soit {:.2} µs par entrée d'historique dans SQLite ACID", duration.as_micros() as f64 / 1000.0);
+    println!(
+        "  [OK] Benchmark : 1 000 entrées d'historique insérées en {:?}",
+        duration
+    );
+    println!(
+        "       Soit {:.2} µs par entrée d'historique dans SQLite ACID",
+        duration.as_micros() as f64 / 1000.0
+    );
 
-    let count: i64 = conn.query_row("SELECT count(*) FROM history", [], |r| r.get(0)).unwrap();
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM history", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(count, 1000);
 }
 
@@ -222,7 +299,12 @@ async fn test_real_network_pulse() {
         match tokio::net::TcpStream::connect(addr).await {
             Ok(_stream) => {
                 let tcp_duration = t_tcp_start.elapsed();
-                println!("  [OK] {} ({}) : Connexion socket TCP réelle en {:.2} ms", name, addr, tcp_duration.as_secs_f64() * 1000.0);
+                println!(
+                    "  [OK] {} ({}) : Connexion socket TCP réelle en {:.2} ms",
+                    name,
+                    addr,
+                    tcp_duration.as_secs_f64() * 1000.0
+                );
             }
             Err(e) => {
                 println!("  [WARN] {} ({}) : Échec connexion ({})", name, addr, e);
@@ -237,7 +319,12 @@ async fn test_real_network_pulse() {
         Ok(mut addrs) => {
             let dns_duration = t_dns_start.elapsed();
             if let Some(first_ip) = addrs.next() {
-                println!("  [OK] Résolution DNS réelle de {} -> {} en {:.2} ms", host, first_ip, dns_duration.as_secs_f64() * 1000.0);
+                println!(
+                    "  [OK] Résolution DNS réelle de {} -> {} en {:.2} ms",
+                    host,
+                    first_ip,
+                    dns_duration.as_secs_f64() * 1000.0
+                );
             }
         }
         Err(e) => {

@@ -1,20 +1,41 @@
 <!doctype html>
-<html lang="fr">
+<html lang="fr" data-theme="dark">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>Orakle V2 Chrome</title>
+<title>Orakle Browser V2</title>
 <style>
   :root {
     --bg: #0d1117;
     --surface: #161b22;
-    --surface-hover: #1f242c;
-    --border: rgba(255, 255, 255, 0.08);
+    --surface-2: #1c222b;
+    --surface-hover: #212834;
+    --border: rgba(240, 246, 252, 0.10);
     --text: #f0f6fc;
     --text-muted: #8b949e;
     --accent: #0969da;
-    --accent-focus: rgba(9, 105, 218, 0.35);
-    --shield-ok: #10b981;
+    --accent-soft: rgba(9, 105, 218, 0.16);
+    --accent-focus: rgba(9, 105, 218, 0.42);
+    --ok: #10b981;
+    --warn: #d29922;
+    --danger: #f85149;
+    --private: #8957e5;
+  }
+  :root[data-theme="light"] {
+    --bg: #f3f5f8;
+    --surface: #ffffff;
+    --surface-2: #eaeef2;
+    --surface-hover: #e2e8f0;
+    --border: rgba(31, 35, 40, 0.12);
+    --text: #1f2328;
+    --text-muted: #59636e;
+    --accent: #0969da;
+    --accent-soft: rgba(9, 105, 218, 0.10);
+    --accent-focus: rgba(9, 105, 218, 0.30);
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --danger: #cf222e;
+    --private: #8250df;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
@@ -22,160 +43,562 @@
     color: var(--text);
     font-family: -apple-system, BlinkMacSystemFont, "Plus Jakarta Sans", "Inter", "Segoe UI", sans-serif;
     font-size: 13px;
-    height: 56px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    user-select: none;
+  }
+  button {
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text);
+    border-radius: 7px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    transition: background 140ms ease, border-color 140ms ease, color 140ms ease;
+  }
+  button:hover { background: var(--surface-hover); }
+  button:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  button:disabled { opacity: 0.38; cursor: default; pointer-events: none; }
+
+  /* Row 1: Top Navigation Bar (46px) */
+  .topbar {
+    height: 46px;
     display: flex;
     align-items: center;
-    padding: 0 12px;
-    gap: 10px;
+    padding: 0 10px;
+    gap: 6px;
     border-bottom: 1px solid var(--border);
-    user-select: none;
-    overflow: hidden;
+    background: var(--bg);
   }
   .brand {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 7px;
+    padding: 0 6px 0 2px;
     font-weight: 600;
     font-size: 13px;
     letter-spacing: -0.01em;
-    padding-right: 6px;
     white-space: nowrap;
   }
-  .brand-mark {
-    width: 22px;
-    height: 22px;
-    border-radius: 6px;
-    background: var(--accent);
-    display: grid;
-    place-items: center;
-    color: #fff;
-    font-weight: 700;
-    font-size: 12px;
-  }
-  .omnibox-form {
+  .nav-group { display: flex; align-items: center; gap: 2px; }
+  .icon-btn { width: 30px; height: 30px; border-radius: 7px; }
+  .icon-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+  .omnibox {
     flex: 1;
+    height: 32px;
     display: flex;
     align-items: center;
+    gap: 7px;
     background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 8px;
-    height: 36px;
-    padding: 0 10px;
-    gap: 8px;
-    transition: border-color 150ms ease, box-shadow 150ms ease;
+    padding: 0 9px;
+    min-width: 180px;
+    transition: border-color 140ms ease, box-shadow 140ms ease;
   }
-  .omnibox-form:focus-within {
-    border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--accent-focus);
+  .omnibox:focus-within { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-focus); }
+  .sec-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 11px;
+    font-weight: 500;
+    color: var(--text-muted);
+    padding: 2px 6px;
+    border-radius: 5px;
+    background: var(--surface-2);
+    white-space: nowrap;
   }
+  .sec-badge.https { color: var(--ok); }
+  .sec-badge.http { color: var(--warn); }
+  .sec-badge.private { color: var(--private); }
   .omnibox-input {
     flex: 1;
-    background: transparent;
     border: none;
-    outline: none;
+    background: transparent;
     color: var(--text);
     font-family: "JetBrains Mono", ui-monospace, monospace;
     font-size: 12.5px;
+    outline: none;
+    min-width: 60px;
   }
-  .actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  button {
-    height: 34px;
-    padding: 0 11px;
-    border-radius: 8px;
-    border: 1px solid var(--border);
-    background: var(--surface);
-    color: var(--text);
-    font-family: inherit;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-    transition: background 150ms ease, border-color 150ms ease;
+  .pane-tag {
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 2px 6px;
+    border-radius: 4px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    display: none;
     white-space: nowrap;
   }
-  button:hover { background: var(--surface-hover); }
-  button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-  button.primary {
-    background: var(--accent);
-    border-color: transparent;
-    color: #ffffff;
-  }
-  button.primary:hover { background: #085ec2; }
-  .shield-pill {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
+  .pane-tag.visible { display: inline-flex; }
+
+  .toolbar-actions { display: flex; align-items: center; gap: 4px; }
+  .pill-btn {
     height: 30px;
+    padding: 0 9px;
+    border-radius: 7px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 12px;
+    font-weight: 500;
+    white-space: nowrap;
+  }
+  .pill-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .shield-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); }
+  .shield-dot.off { background: var(--danger); }
+
+  /* Row 2: Tab Strip (40px) */
+  .tabstrip {
+    height: 40px;
+    display: flex;
+    align-items: center;
     padding: 0 10px;
+    gap: 6px;
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+  }
+  .space-badge {
+    height: 26px;
+    padding: 0 8px;
     border-radius: 6px;
     background: var(--surface);
     border: 1px solid var(--border);
-    color: var(--text-muted);
     font-size: 11.5px;
-    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-weight: 600;
+    gap: 6px;
+    white-space: nowrap;
   }
-  .shield-dot {
-    width: 7px;
-    height: 7px;
+  .space-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+  .tabs-list {
+    flex: 1;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .tabs-list::-webkit-scrollbar { display: none; }
+  .tab {
+    height: 29px;
+    min-width: 112px;
+    max-width: 190px;
+    padding: 0 7px 0 9px;
+    border-radius: 7px;
+    background: transparent;
+    border: 1px solid transparent;
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    flex-shrink: 0;
+    font-size: 12px;
+  }
+  .tab.pinned { min-width: 34px; max-width: 44px; padding: 0 7px; justify-content: center; }
+  .tab:hover { background: var(--surface-hover); color: var(--text); }
+  .tab.active {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--text);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+  }
+  .tab.split-right { border-color: var(--accent); }
+  .tab.suspended { opacity: 0.62; font-style: italic; }
+  .tab.incognito { border-bottom: 2px solid var(--private); }
+  .tab-title {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    text-align: left;
+  }
+  .tab-close {
+    width: 17px;
+    height: 17px;
+    border-radius: 4px;
+    font-size: 11px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .tab-close:hover { background: var(--surface-hover); color: var(--danger); }
+  .spinner {
+    width: 11px;
+    height: 11px;
+    border: 2px solid var(--border);
+    border-top-color: var(--accent);
     border-radius: 50%;
-    background: var(--shield-ok);
+    animation: spin 0.7s linear infinite;
+    flex-shrink: 0;
   }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .tab-search {
+    width: 128px;
+    height: 26px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    padding: 0 8px;
+    font-size: 11.5px;
+    outline: none;
+  }
+
+  /* Row 3 (optional): Split View Control Strip (28px) */
+  .splitbar {
+    height: 28px;
+    display: none;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 10px;
+    gap: 8px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    font-size: 11.5px;
+  }
+  .splitbar.active { display: flex; }
+  .split-info { display: flex; align-items: center; gap: 6px; color: var(--text-muted); }
+  .split-controls { display: flex; align-items: center; gap: 4px; }
+  .mini-btn {
+    height: 21px;
+    padding: 0 7px;
+    border-radius: 5px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    font-size: 11px;
+  }
+  .mini-btn.active { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
 </style>
 </head>
 <body>
-  <div class="brand" aria-label="Orakle Browser">
-    <span class="brand-mark">O</span>
-    <span>Orakle</span>
-  </div>
-
-  <form class="omnibox-form" id="omniboxForm">
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8b949e" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-      <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-      <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-    </svg>
-    <input class="omnibox-input" id="urlInput" type="text" value="https://doc.rust-lang.org/" aria-label="Barre d'adresse" />
-    <button type="submit" class="primary">Aller</button>
-  </form>
-
-  <div class="actions">
-    <button type="button" id="btnSplit" title="Basculer Split View 50/50">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
-        <rect x="3" y="3" width="18" height="18" rx="2"></rect>
-        <line x1="12" y1="3" x2="12" y2="21"></line>
+  <header class="topbar" role="toolbar" aria-label="Navigation principale Orakle">
+    <div class="brand" title="Orakle Browser V2">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="2" y="2" width="20" height="20" rx="6" fill="#0969da"></rect>
+        <circle cx="12" cy="12" r="5" stroke="#ffffff" stroke-width="2"></circle>
+        <circle cx="12" cy="12" r="1.5" fill="#ffffff"></circle>
       </svg>
-      Split View
+      <span>Orakle</span>
+    </div>
+
+    <div class="nav-group">
+      <button type="button" class="icon-btn" id="btnBack" title="Précédent (Alt+Gauche)" aria-label="Précédent">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+      </button>
+      <button type="button" class="icon-btn" id="btnForward" title="Suivant (Alt+Droite)" aria-label="Suivant">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+      </button>
+      <button type="button" class="icon-btn" id="btnReload" title="Actualiser (Ctrl+R)" aria-label="Actualiser">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-9-9c2.52 0 4.93 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/></svg>
+      </button>
+    </div>
+
+    <form class="omnibox" id="omniboxForm">
+      <span class="sec-badge" id="secBadge" title="Statut de sécurité réel de la connexion">Local</span>
+      <span class="pane-tag" id="paneTag">Volet Gauche</span>
+      <input class="omnibox-input" id="urlInput" type="text" autocomplete="off" spellcheck="false" aria-label="Adresse Web ou recherche" placeholder="Saisir une URL HTTPS ou une recherche..." />
+      <button type="button" class="icon-btn" id="btnBookmark" title="Ajouter aux favoris" aria-label="Favoris" style="width:24px;height:24px;">
+        <svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg>
+      </button>
+    </form>
+
+    <div class="toolbar-actions">
+      <button type="button" class="pill-btn" id="btnShield" title="Ouvrir Orakle Shield (Proxy + WebKitWebExtension)">
+        <span class="shield-dot" id="shieldDot"></span>
+        <span id="shieldCount">Shield 0</span>
+      </button>
+      <button type="button" class="pill-btn" id="btnSplit" title="Basculer Split View indépendant">
+        <svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+        Split
+      </button>
+      <button type="button" class="icon-btn" id="btnDownloads" title="Téléchargements" aria-label="Téléchargements">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      </button>
+      <button type="button" class="icon-btn" id="btnPanel" title="Panneau latéral (Favoris, Historique, Espaces, Notes, Paramètres)" aria-label="Panneau latéral">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
+      </button>
+      <button type="button" class="icon-btn" id="btnSettings" title="Paramètres & Profils" aria-label="Paramètres">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <nav class="tabstrip" aria-label="Onglets et espaces">
+    <button type="button" class="space-badge" id="btnSpace" title="Changer ou créer un espace">
+      <span class="space-dot" id="spaceDot"></span>
+      <span id="spaceLabel">Travail</span>
     </button>
-    <button type="button" id="btnDiscard" title="Suspendre le panneau droit en SQLite">
-      Suspendre Droit
+
+    <div class="tabs-list" id="tabsList" role="tablist"></div>
+
+    <input class="tab-search" id="tabSearch" type="search" placeholder="Filtrer onglets..." aria-label="Rechercher parmi les onglets" />
+
+    <button type="button" class="icon-btn" id="btnNewTab" title="Nouvel onglet (Ctrl+T)" aria-label="Nouvel onglet">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
     </button>
-    <div class="shield-pill" id="shieldBadge" title="Proxy Loopback Rust actif">
-      <span class="shield-dot"></span>
-      <span id="shieldCount">Proxy 0 blocages</span>
+    <button type="button" class="icon-btn" id="btnNewPrivate" title="Nouvel onglet privé (contexte éphémère)" aria-label="Nouvel onglet privé">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+    </button>
+    <button type="button" class="icon-btn" id="btnReopen" title="Rouvrir le dernier onglet fermé (Ctrl+Shift+T)" aria-label="Rouvrir onglet fermé">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"/></svg>
+    </button>
+  </nav>
+
+  <div class="splitbar" id="splitbar">
+    <div class="split-info">
+      <strong id="splitRatioLabel">Split 50% / 50%</strong>
+      <span>|</span>
+      <span id="splitLeftLabel">Gauche : —</span>
+      <span>|</span>
+      <span id="splitRightLabel">Droite : —</span>
+    </div>
+    <div class="split-controls">
+      <button type="button" class="mini-btn" id="btnFocusLeft">Focus Gauche</button>
+      <button type="button" class="mini-btn" id="btnFocusRight">Focus Droite</button>
+      <button type="button" class="mini-btn" id="btnRatio30">30/70</button>
+      <button type="button" class="mini-btn" id="btnRatio50">50/50</button>
+      <button type="button" class="mini-btn" id="btnRatio70">70/30</button>
+      <button type="button" class="mini-btn" id="btnSwapPanes">Inverser ⇄</button>
+      <button type="button" class="mini-btn" id="btnSyncScroll">Sync Scroll</button>
+      <button type="button" class="mini-btn" id="btnCloseRight">Fermer Droit</button>
     </div>
   </div>
 
   <script>
+    let state = {
+      tabs: [],
+      spaces: [],
+      active_space_id: "default",
+      left_tab_id: null,
+      right_tab_id: null,
+      focused_pane: "left",
+      split_active: false,
+      split_ratio: 0.5,
+      sync_scroll: false,
+      panel_open: false,
+      panel_section: "shield",
+      theme: "dark",
+      shield_enabled: true,
+      shield_blocked: 0,
+      can_go_back: false,
+      can_go_forward: false,
+      closed_count: 0,
+      downloads_count: 0,
+    };
+    let tabFilter = "";
+    let dragTabId = null;
+
     function postCmd(cmd, payload) {
       if (window.ipc && typeof window.ipc.postMessage === "function") {
         window.ipc.postMessage(JSON.stringify({ cmd, payload }));
       }
     }
+
     document.getElementById("omniboxForm").addEventListener("submit", (e) => {
       e.preventDefault();
-      postCmd("navigate", document.getElementById("urlInput").value.trim());
+      const val = document.getElementById("urlInput").value.trim();
+      if (val) postCmd("navigate", { url: val });
     });
-    document.getElementById("btnSplit").addEventListener("click", () => postCmd("toggle_split", ""));
-    document.getElementById("btnDiscard").addEventListener("click", () => postCmd("discard_right", ""));
-    window.updateOrakleStats = (blocked, discarded) => {
-      document.getElementById("shieldCount").textContent = "Proxy " + blocked + " blocages";
-      document.getElementById("btnDiscard").textContent = discarded ? "Restaurer Droit" : "Suspendre Droit";
+    document.getElementById("btnBack").addEventListener("click", () => postCmd("nav_back", {}));
+    document.getElementById("btnForward").addEventListener("click", () => postCmd("nav_forward", {}));
+    document.getElementById("btnReload").addEventListener("click", () => postCmd("nav_reload", {}));
+    document.getElementById("btnBookmark").addEventListener("click", () => postCmd("add_bookmark", {}));
+    document.getElementById("btnSplit").addEventListener("click", () => postCmd("toggle_split", {}));
+    document.getElementById("btnShield").addEventListener("click", () => postCmd("open_panel", { section: "shield" }));
+    document.getElementById("btnDownloads").addEventListener("click", () => postCmd("open_panel", { section: "downloads" }));
+    document.getElementById("btnPanel").addEventListener("click", () => postCmd("toggle_panel", {}));
+    document.getElementById("btnSettings").addEventListener("click", () => postCmd("open_panel", { section: "settings" }));
+    document.getElementById("btnSpace").addEventListener("click", () => postCmd("open_panel", { section: "spaces" }));
+    document.getElementById("btnNewTab").addEventListener("click", () => postCmd("new_tab", { incognito: false }));
+    document.getElementById("btnNewPrivate").addEventListener("click", () => postCmd("new_tab", { incognito: true }));
+    document.getElementById("btnReopen").addEventListener("click", () => postCmd("reopen_closed", {}));
+    document.getElementById("tabSearch").addEventListener("input", (e) => {
+      tabFilter = e.target.value.toLowerCase();
+      renderTabs();
+    });
+
+    document.getElementById("btnFocusLeft").addEventListener("click", () => postCmd("focus_pane", { pane: "left" }));
+    document.getElementById("btnFocusRight").addEventListener("click", () => postCmd("focus_pane", { pane: "right" }));
+    document.getElementById("btnRatio30").addEventListener("click", () => postCmd("set_split_ratio", { ratio: 0.30 }));
+    document.getElementById("btnRatio50").addEventListener("click", () => postCmd("set_split_ratio", { ratio: 0.50 }));
+    document.getElementById("btnRatio70").addEventListener("click", () => postCmd("set_split_ratio", { ratio: 0.70 }));
+    document.getElementById("btnSwapPanes").addEventListener("click", () => postCmd("swap_panes", {}));
+    document.getElementById("btnSyncScroll").addEventListener("click", () => postCmd("toggle_sync_scroll", {}));
+    document.getElementById("btnCloseRight").addEventListener("click", () => postCmd("toggle_split", {}));
+
+    document.addEventListener("keydown", (e) => {
+      if (e.ctrlKey && e.key.toLowerCase() === "t" && !e.shiftKey) {
+        e.preventDefault();
+        postCmd("new_tab", { incognito: false });
+      } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "t") {
+        e.preventDefault();
+        postCmd("reopen_closed", {});
+      } else if (e.ctrlKey && e.key.toLowerCase() === "l") {
+        e.preventDefault();
+        document.getElementById("urlInput").select();
+      } else if (e.altKey && e.key.toLowerCase() === "p") {
+        e.preventDefault();
+        postCmd("focus_pane", { pane: state.focused_pane === "left" ? "right" : "left" });
+      }
+    });
+
+    function renderTabs() {
+      const list = document.getElementById("tabsList");
+      list.innerHTML = "";
+      const spaceTabs = state.tabs.filter(
+        (t) => t.space_id === state.active_space_id &&
+               (!tabFilter || t.title.toLowerCase().includes(tabFilter) || t.url.toLowerCase().includes(tabFilter))
+      );
+
+      for (const tab of spaceTabs) {
+        const el = document.createElement("div");
+        const isLeft = tab.id === state.left_tab_id;
+        const isRight = state.split_active && tab.id === state.right_tab_id;
+        el.className = "tab"
+          + (isLeft ? " active" : "")
+          + (isRight ? " split-right" : "")
+          + (tab.is_pinned ? " pinned" : "")
+          + (tab.is_suspended ? " suspended" : "")
+          + (tab.is_incognito ? " incognito" : "");
+        el.draggable = true;
+        el.title = tab.title + " — " + tab.url + (tab.is_suspended ? " (Suspendu)" : "");
+
+        el.addEventListener("dragstart", () => { dragTabId = tab.id; });
+        el.addEventListener("dragover", (ev) => ev.preventDefault());
+        el.addEventListener("drop", () => {
+          if (dragTabId && dragTabId !== tab.id) {
+            postCmd("reorder_tab", { tab_id: dragTabId, target_tab_id: tab.id });
+          }
+          dragTabId = null;
+        });
+
+        el.addEventListener("click", (ev) => {
+          if (ev.shiftKey && state.split_active) {
+            postCmd("assign_right_tab", { tab_id: tab.id });
+          } else {
+            postCmd("select_tab", { tab_id: tab.id });
+          }
+        });
+        el.addEventListener("contextmenu", (ev) => {
+          ev.preventDefault();
+          postCmd(tab.is_suspended ? "restore_tab" : "suspend_tab", { tab_id: tab.id });
+        });
+
+        if (tab.is_loading) {
+          const sp = document.createElement("span");
+          sp.className = "spinner";
+          el.appendChild(sp);
+        }
+
+        const titleSpan = document.createElement("span");
+        titleSpan.className = "tab-title";
+        const prefix = tab.is_pinned ? "★ " : (tab.is_suspended ? "☾ " : (tab.is_playing_audio ? "🔊 " : ""));
+        titleSpan.textContent = tab.is_pinned ? (tab.title || "•").slice(0, 2) : (prefix + (tab.title || tab.url));
+        el.appendChild(titleSpan);
+
+        if (!tab.is_pinned) {
+          const pinBtn = document.createElement("button");
+          pinBtn.type = "button";
+          pinBtn.className = "tab-close";
+          pinBtn.textContent = "P";
+          pinBtn.title = "Épingler / Désépingler (clic droit : suspendre)";
+          pinBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            postCmd("toggle_pin", { tab_id: tab.id });
+          });
+          el.appendChild(pinBtn);
+
+          const closeBtn = document.createElement("button");
+          closeBtn.type = "button";
+          closeBtn.className = "tab-close";
+          closeBtn.textContent = "×";
+          closeBtn.title = "Fermer l'onglet";
+          closeBtn.addEventListener("click", (ev) => {
+            ev.stopPropagation();
+            postCmd("close_tab", { tab_id: tab.id });
+          });
+          el.appendChild(closeBtn);
+        }
+
+        list.appendChild(el);
+      }
+    }
+
+    window.applyOrakleState = (nextState) => {
+      state = nextState;
+      document.documentElement.setAttribute("data-theme", state.theme || "dark");
+
+      const sp = state.spaces.find((s) => s.id === state.active_space_id);
+      document.getElementById("spaceLabel").textContent = sp ? sp.name : "Travail";
+      if (sp) document.getElementById("spaceDot").style.background = sp.color;
+
+      const focusedId = state.split_active && state.focused_pane === "right" ? state.right_tab_id : state.left_tab_id;
+      const focusedTab = state.tabs.find((t) => t.id === focusedId);
+      const urlInput = document.getElementById("urlInput");
+      if (focusedTab && document.activeElement !== urlInput) {
+        urlInput.value = focusedTab.url || "";
+      }
+
+      const secBadge = document.getElementById("secBadge");
+      const urlStr = focusedTab ? focusedTab.url : "";
+      if (focusedTab && focusedTab.is_incognito) {
+        secBadge.className = "sec-badge private";
+        secBadge.textContent = "Privé";
+      } else if (urlStr.startsWith("https://")) {
+        secBadge.className = "sec-badge https";
+        secBadge.textContent = "HTTPS";
+      } else if (urlStr.startsWith("http://127.0.0.1")) {
+        secBadge.className = "sec-badge";
+        secBadge.textContent = "Local";
+      } else {
+        secBadge.className = "sec-badge http";
+        secBadge.textContent = "HTTP";
+      }
+
+      const paneTag = document.getElementById("paneTag");
+      if (state.split_active) {
+        paneTag.className = "pane-tag visible";
+        paneTag.textContent = state.focused_pane === "right" ? "Droite" : "Gauche";
+      } else {
+        paneTag.className = "pane-tag";
+      }
+
+      document.getElementById("btnBack").disabled = !state.can_go_back;
+      document.getElementById("btnForward").disabled = !state.can_go_forward;
+      document.getElementById("btnReopen").disabled = state.closed_count === 0;
+      document.getElementById("btnSplit").classList.toggle("active", !!state.split_active);
+      document.getElementById("btnPanel").classList.toggle("active", !!state.panel_open);
+
+      document.getElementById("shieldCount").textContent = "Shield " + state.shield_blocked;
+      document.getElementById("shieldDot").classList.toggle("off", !state.shield_enabled);
+
+      const splitbar = document.getElementById("splitbar");
+      splitbar.classList.toggle("active", !!state.split_active);
+      if (state.split_active) {
+        const pctL = Math.round((state.split_ratio || 0.5) * 100);
+        document.getElementById("splitRatioLabel").textContent = "Split " + pctL + "% / " + (100 - pctL) + "%";
+        const lTab = state.tabs.find((t) => t.id === state.left_tab_id);
+        const rTab = state.tabs.find((t) => t.id === state.right_tab_id);
+        document.getElementById("splitLeftLabel").textContent = "G: " + (lTab ? lTab.title : "—").slice(0, 22);
+        document.getElementById("splitRightLabel").textContent = "D: " + (rTab ? rTab.title : "—").slice(0, 22);
+        document.getElementById("btnFocusLeft").classList.toggle("active", state.focused_pane === "left");
+        document.getElementById("btnFocusRight").classList.toggle("active", state.focused_pane === "right");
+        document.getElementById("btnSyncScroll").classList.toggle("active", !!state.sync_scroll);
+      }
+
+      renderTabs();
     };
+    postCmd("ui_ready", {});
   </script>
 </body>
 </html>

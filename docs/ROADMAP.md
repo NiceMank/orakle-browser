@@ -1,7 +1,7 @@
 # Orakle Browser — Feuille de Route de Développement (Roadmap)
 
 - **Version** : 2.0.0
-- **Statut** : Plan directeur des versions (mise à jour Phase 3)
+- **Statut** : Plan directeur des versions (mise à jour Phase 4)
 - **Dernière mise à jour** : 2026-11-13
 
 ---
@@ -48,14 +48,15 @@ flowchart LR
 ### Phase 3 : Implémentation du Cœur Rust & Validation Moteur Réelle (Validée sur socle `orakle-core` + `orakle-app`)
 - [x] Workspace Rust fonctionnel sous [`crates/orakle-core`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/crates/orakle-core/Cargo.toml) (`storage`, `shield` `Send+Sync`, `pulse` multi-échantillons, `proxy` fail-closed anti-DNS-rebinding) et [`crates/orakle-app`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/crates/orakle-app/Cargo.toml) (`tao 0.37` + `wry 0.57`).
 - [x] Preuves empiriques du Proxy Loopback Rust : suite E2E `proxy_server_e2e.rs`, harnais réel `WebKit2GTK 4.1` (`scripts/verify-webview-proxy.py`) et vérification NetLog Chromium (`0` session QUIC / bascule `h2`).
-- [x] Validation multi-WebViews (Chrome UI + Split View 50/50 sous `gtk::Fixed`, volet incognito, redimensionnement dynamique, Tab Discarding SQLite WAL mesuré à `-181,7 Mio VmRSS`).
-- [ ] Compléter le cycle de vie interactif complet des onglets, l'historique navigation/favoris UI et le sélecteur de thèmes persistant dans `chrome.html`.
+- [x] Validation multi-WebViews (Chrome UI + Split View 50/50 sous `gtk::Fixed`, volet incognito, redimensionnement dynamique, Tab Discarding SQLite WAL).
+- [x] Cycle de vie interactif complet des onglets, historique/favoris/notes/téléchargements/sessions UI et sélecteur de thèmes persistant livrés en Phase 4.
 
-### Phase 4 : Fonctions Avancées & Filtrage Niveau 2/3
-- [ ] Ajouter le support **SOCKS5** au proxy loopback (nécessaire pour `ws://` sous WebKitGTK).
-- [ ] Implémenter les adaptateurs natifs OS Niveau 2 (`WebView2 WebResourceRequested`, `WebKitWebExtension`, `WKContentRuleListStore`) et la prise en charge ciblée Niveau 3 (cosmétique / scriptlets / `$removeparam`).
-- [ ] Mode Lecture (Orakle Reader), gestionnaire des cookies/purge sélective et intégration des coffres-forts secrets OS.
-- [ ] Exposer la sonde Pulse multi-échantillons et la télémétrie `ProxyTelemetry` dans le panneau latéral Chrome.
+### Phase 4 : Intégration Native Complète, Split View, Bouclier Niveau 1–2 & Benchmark Réel (Validée sous Linux — voir [`PHASE4-REPORT.md`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/docs/VALIDATION/PHASE4-REPORT.md))
+- [x] Proxy loopback étendu avec **SOCKS5 (RFC 1928)** pour WebSockets (`ws://`), IPv6 `[::1]` et vérifications pré-DNS (`crates/orakle-core/src/proxy.rs`).
+- [x] Extension native Linux Niveau 2 [`crates/orakle-webkit-ext`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/crates/orakle-webkit-ext/Cargo.toml) (`liborakle_webkit_ext.so` / `send-request`) connectée à `ShieldEngine` avec télémétrie IPC vérifiée (`natif=5`), plus spécification Windows (`WebView2`) et compilateur unitaire macOS (`WKContentRuleListStore`).
+- [x] Interface complète [`chrome.html`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/crates/orakle-app/src/chrome.html) + [`panel.html`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/crates/orakle-app/src/panel.html) (Top bar, onglets, Split View 30/70/50/50/70/30 + swap + focus + sync scroll, Espaces, Notes, Favoris, Historique, Téléchargements, Pulse multi-échantillons, Profils & Mode Privé).
+- [x] Benchmark mémoire/CPU cgroup v2 & PSS réel sur 8 scénarios × 3 passes (`--bench`) et captures PNG réelles de l'application exécutée.
+- [ ] Intégration des coffres-forts secrets OS (`libsecret` / `DPAPI` / `Keychain`), Mode Lecture (Reader) et validation sur hôtes réels Windows/macOS.
 
 ### Phase 5 : Stabilisation, Tests et Distribution
 - [ ] Packaging Linux natif : `.deb` (Debian/Ubuntu/Kali), AppImage et tarball binaire.

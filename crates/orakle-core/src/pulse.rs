@@ -1,3 +1,4 @@
+use crate::error::{OrakleError, Result};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -6,7 +7,6 @@ use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 use tokio_rustls::TlsConnector;
 use url::Url;
-use crate::error::{OrakleError, Result};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct PulseResult {
@@ -75,7 +75,11 @@ impl NetworkPulse {
             .host_str()
             .ok_or_else(|| OrakleError::Network("Hôte manquant".into()))?;
         let port = parsed.port_or_known_default().unwrap_or(443);
-        let path = if parsed.path().is_empty() { "/" } else { parsed.path() };
+        let path = if parsed.path().is_empty() {
+            "/"
+        } else {
+            parsed.path()
+        };
 
         let t_total_start = Instant::now();
 
@@ -84,7 +88,9 @@ impl NetworkPulse {
         let addr_str = format!("{}:{}", host, port);
         let mut addrs = tokio::time::timeout(self.timeout, tokio::net::lookup_host(&addr_str))
             .await
-            .map_err(|_| OrakleError::Network(format!("Timeout DNS ({:?}) pour {}", self.timeout, host)))?
+            .map_err(|_| {
+                OrakleError::Network(format!("Timeout DNS ({:?}) pour {}", self.timeout, host))
+            })?
             .map_err(|e| OrakleError::Network(format!("Échec résolution DNS : {}", e)))?;
         let resolved_addr = addrs
             .next()
@@ -95,7 +101,12 @@ impl NetworkPulse {
         let t_tcp_start = Instant::now();
         let tcp_stream = tokio::time::timeout(self.timeout, TcpStream::connect(resolved_addr))
             .await
-            .map_err(|_| OrakleError::Network(format!("Timeout TCP ({:?}) vers {}", self.timeout, resolved_addr)))?
+            .map_err(|_| {
+                OrakleError::Network(format!(
+                    "Timeout TCP ({:?}) vers {}",
+                    self.timeout, resolved_addr
+                ))
+            })?
             .map_err(|e| OrakleError::Network(format!("Échec connexion socket TCP : {}", e)))?;
         let tcp_connect_ms = t_tcp_start.elapsed().as_secs_f64() * 1000.0;
 
@@ -104,10 +115,16 @@ impl NetworkPulse {
         let server_name = ServerName::try_from(host.to_string())
             .map_err(|_| OrakleError::Network("Nom de serveur TLS invalide".into()))?;
         let connector = TlsConnector::from(self.tls_config.clone());
-        let mut tls_stream = tokio::time::timeout(self.timeout, connector.connect(server_name, tcp_stream))
-            .await
-            .map_err(|_| OrakleError::Tls(format!("Timeout handshake TLS ({:?}) vers {}", self.timeout, host)))?
-            .map_err(|e| OrakleError::Tls(format!("Échec handshake TLS 1.3 : {}", e)))?;
+        let mut tls_stream =
+            tokio::time::timeout(self.timeout, connector.connect(server_name, tcp_stream))
+                .await
+                .map_err(|_| {
+                    OrakleError::Tls(format!(
+                        "Timeout handshake TLS ({:?}) vers {}",
+                        self.timeout, host
+                    ))
+                })?
+                .map_err(|e| OrakleError::Tls(format!("Échec handshake TLS 1.3 : {}", e)))?;
         let tls_handshake_ms = t_tls_start.elapsed().as_secs_f64() * 1000.0;
 
         // 4. Phase Émission HTTP & Premier Octet (TTFB)
@@ -154,7 +171,11 @@ impl NetworkPulse {
     }
 
     /// Exécute N sondes séquentielles et calcule min, p50 (médiane), p95 et max sur chaque couche
-    pub async fn probe_stats(&self, target_url: &str, samples: usize) -> Result<PulseBenchmarkStats> {
+    pub async fn probe_stats(
+        &self,
+        target_url: &str,
+        samples: usize,
+    ) -> Result<PulseBenchmarkStats> {
         let mut results = Vec::with_capacity(samples);
         let mut last_err = None;
 
@@ -166,7 +187,9 @@ impl NetworkPulse {
         }
 
         if results.is_empty() {
-            return Err(last_err.unwrap_or_else(|| OrakleError::Network("Aucun échantillon réussi".into())));
+            return Err(
+                last_err.unwrap_or_else(|| OrakleError::Network("Aucun échantillon réussi".into()))
+            );
         }
 
         let dns_vals: Vec<f64> = results.iter().map(|r| r.dns_ms).collect();
@@ -194,7 +217,9 @@ fn compute_percentiles(mut values: Vec<f64>) -> PhasePercentiles {
     let min_ms = values[0];
     let max_ms = values[len - 1];
     let p50_ms = values[len / 2];
-    let p95_idx = ((len as f64 * 0.95).ceil() as usize).saturating_sub(1).min(len - 1);
+    let p95_idx = ((len as f64 * 0.95).ceil() as usize)
+        .saturating_sub(1)
+        .min(len - 1);
     let p95_ms = values[p95_idx];
 
     PhasePercentiles {
@@ -211,7 +236,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_real_pulse_probe_and_stats() {
-        let pulse = NetworkPulse::with_timeout(Duration::from_secs(4)).expect("initialisation pulse");
+        let pulse =
+            NetworkPulse::with_timeout(Duration::from_secs(4)).expect("initialisation pulse");
         let stats_res = pulse.probe_stats("https://doc.rust-lang.org/", 5).await;
 
         match stats_res {
@@ -247,7 +273,10 @@ mod tests {
                 assert!(s.ttfb.p50_ms > 0.0);
             }
             Err(e) => {
-                println!("  [INFO] Test réseau ignoré (réseau indisponible ou bloqué) : {:?}", e);
+                println!(
+                    "  [INFO] Test réseau ignoré (réseau indisponible ou bloqué) : {:?}",
+                    e
+                );
             }
         }
     }

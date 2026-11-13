@@ -1,7 +1,7 @@
 # Orakle Browser — Spécification d'Architecture Technique
 
 - **Version** : 2.0.0
-- **Statut** : Document d'architecture de référence (aligné Phase 3)
+- **Statut** : Document d'architecture de référence (aligné Phase 4)
 - **Dernière mise à jour** : 2026-11-13
 
 ---
@@ -38,9 +38,10 @@ flowchart TD
         WindowManager["Window & Layout Manager (tao 0.37 + wry 0.57 / gtk::Fixed Linux)"]
         TabEngine["Tab Discarding & Split View State (SQLite WAL)"]
         ShieldEngine["Orakle Shield (adblock 0.13.5 + Flatbuffers, Send+Sync)"]
-        ProxyEngine["Loopback Proxy (127.0.0.1 HTTP/CONNECT, fail-closed, anti-SSRF)"]
+        ProxyEngine["Loopback Proxy (127.0.0.1 HTTP/CONNECT/SOCKS5, fail-closed, anti-SSRF)"]
+        WebKitExt["Extension WebKitGTK Niveau 2 (liborakle_webkit_ext.so send-request)"]
         NetworkProbe["Network Pulse Engine (tokio::net + tokio-rustls ring)"]
-        StorageEngine["Local DB (rusqlite 0.33 / SQLite WAL)"]
+        StorageEngine["Local DB (rusqlite 0.33 / SQLite WAL v2)"]
     end
 
     subgraph Web_Engines ["Moteurs de Rendu Web Isolés"]

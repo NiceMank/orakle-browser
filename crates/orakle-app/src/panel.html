@@ -1,0 +1,465 @@
+<!doctype html>
+<html lang="fr" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Panneau Orakle</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-2: #1c222b;
+    --surface-hover: #212834;
+    --border: rgba(240, 246, 252, 0.10);
+    --text: #f0f6fc;
+    --text-muted: #8b949e;
+    --accent: #0969da;
+    --accent-soft: rgba(9, 105, 218, 0.16);
+    --ok: #10b981;
+    --warn: #d29922;
+    --danger: #f85149;
+  }
+  :root[data-theme="light"] {
+    --bg: #f3f5f8;
+    --surface: #ffffff;
+    --surface-2: #eaeef2;
+    --surface-hover: #e2e8f0;
+    --border: rgba(31, 35, 40, 0.12);
+    --text: #1f2328;
+    --text-muted: #59636e;
+    --accent: #0969da;
+    --accent-soft: rgba(9, 105, 218, 0.10);
+    --ok: #1a7f37;
+    --warn: #9a6700;
+    --danger: #cf222e;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Plus Jakarta Sans", "Inter", sans-serif;
+    font-size: 13px;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    border-left: 1px solid var(--border);
+  }
+  .panel-header {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: var(--surface);
+  }
+  .panel-header h2 { font-size: 13.5px; font-weight: 600; }
+  .nav-tabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface-2);
+  }
+  .nav-pill {
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-muted);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+  .nav-pill.active { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+  .section-box {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .muted { color: var(--text-muted); font-size: 11.5px; line-height: 1.45; }
+  .mono { font-family: "JetBrains Mono", ui-monospace, monospace; font-size: 11.5px; }
+  input, textarea, select {
+    width: 100%;
+    padding: 6px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 12px;
+  }
+  button.btn {
+    padding: 5px 10px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    cursor: pointer;
+    font-size: 12px;
+  }
+  button.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.btn.danger { color: var(--danger); border-color: rgba(248, 81, 73, 0.35); }
+  .list-item {
+    padding: 7px 8px;
+    border-radius: 6px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+  .list-item a { color: var(--text); text-decoration: none; font-weight: 500; cursor: pointer; word-break: break-all; }
+  .list-item a:hover { color: var(--accent); }
+  .badge {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 4px;
+    font-size: 10.5px;
+    font-weight: 600;
+    background: var(--accent-soft);
+    color: var(--accent);
+  }
+  .badge.blocked { background: rgba(248, 81, 73, 0.14); color: var(--danger); }
+  .badge.ok { background: rgba(16, 185, 129, 0.14); color: var(--ok); }
+</style>
+</head>
+<body>
+  <div class="panel-header">
+    <h2 id="panelTitle">Orakle Shield</h2>
+    <button type="button" class="btn" id="btnClosePanel">Fermer</button>
+  </div>
+
+  <div class="nav-tabs" id="navTabs">
+    <button type="button" class="nav-pill" data-sec="shield">Shield</button>
+    <button type="button" class="nav-pill" data-sec="bookmarks">Favoris</button>
+    <button type="button" class="nav-pill" data-sec="history">Historique</button>
+    <button type="button" class="nav-pill" data-sec="downloads">Téléch.</button>
+    <button type="button" class="nav-pill" data-sec="spaces">Espaces</button>
+    <button type="button" class="nav-pill" data-sec="notes">Notes</button>
+    <button type="button" class="nav-pill" data-sec="pulse">Pulse</button>
+    <button type="button" class="nav-pill" data-sec="settings">Paramètres</button>
+  </div>
+
+  <div class="content" id="panelBody"></div>
+
+  <script>
+    let snap = null;
+
+    function postCmd(cmd, payload) {
+      if (window.ipc && typeof window.ipc.postMessage === "function") {
+        window.ipc.postMessage(JSON.stringify({ cmd, payload }));
+      }
+    }
+
+    document.getElementById("btnClosePanel").addEventListener("click", () => postCmd("toggle_panel", {}));
+    document.querySelectorAll(".nav-pill").forEach((btn) => {
+      btn.addEventListener("click", () => postCmd("open_panel", { section: btn.dataset.sec }));
+    });
+
+    function esc(s) {
+      return String(s || "").replace(/[&<>"']/g, (c) => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
+    }
+
+    function renderShield(body) {
+      const tel = snap.telemetry;
+      const enabled = snap.shield_enabled;
+      body.innerHTML = `
+        <div class="section-box">
+          <div class="row">
+            <strong>Protection Orakle Shield</strong>
+            <button class="btn ${enabled ? 'primary' : ''}" id="toggleShieldBtn">${enabled ? 'Activée' : 'Désactivée'}</button>
+          </div>
+          <div class="row muted">
+            <span>Proxy Loopback (HTTP/CONNECT/SOCKS5)</span>
+            <span class="mono">${esc(snap.proxy_addr)}</span>
+          </div>
+          <div class="row muted">
+            <span>Requêtes bloquées (Shield)</span>
+            <strong class="mono">${tel.blocked_by_shield}</strong>
+          </div>
+          <div class="row muted">
+            <span>Dont adaptateur natif WebKitWebExtension</span>
+            <span class="mono">${tel.native_adapter_blocks}</span>
+          </div>
+          <div class="row muted">
+            <span>SSRF / Ports bloqués</span>
+            <span class="mono">${tel.blocked_ssrf} / ${tel.blocked_port}</span>
+          </div>
+          <div class="row muted">
+            <span>Trafic relayé vérifié</span>
+            <span class="mono">${tel.bytes_proxied} octets</span>
+          </div>
+          <p class="muted">Transparence : aucune estimation arbitraire de données économisées ni note de sécurité inventée.</p>
+        </div>
+
+        <div class="section-box">
+          <strong>Exceptions de domaines (allowlist)</strong>
+          <div class="row">
+            <input id="excInput" placeholder="ex: example.com" />
+            <button class="btn primary" id="addExcBtn">Autoriser</button>
+          </div>
+          ${(snap.exceptions || []).map((d) => `
+            <div class="row list-item" style="flex-direction:row;">
+              <span class="mono">${esc(d)}</span>
+              <button class="btn danger" onclick="postCmd('remove_exception', { domain: '${esc(d)}' })">Retirer</button>
+            </div>
+          `).join("") || '<span class="muted">Aucune exception configurée.</span>'}
+        </div>
+
+        <div class="section-box">
+          <strong>Limites réelles par moteur</strong>
+          ${(snap.adapters || []).map((a) => `
+            <div class="list-item">
+              <div class="row"><strong>${esc(a.platform)}</strong><span class="badge">${esc(a.status)}</span></div>
+              <span class="muted">${esc(a.mechanism)}</span>
+              <span class="muted">${esc((a.limitations || []).join(" "))}</span>
+            </div>
+          `).join("")}
+        </div>
+
+        <div class="section-box">
+          <strong>Journal récent (domaines & règles appliquées)</strong>
+          ${(tel.events || []).slice(-18).reverse().map((ev) => `
+            <div class="list-item">
+              <div class="row">
+                <span class="badge ${ev.blocked ? 'blocked' : 'ok'}">${esc(ev.method)}</span>
+                <span class="muted">${esc(ev.layer)}</span>
+              </div>
+              <span class="mono" style="word-break:break-all;">${esc(ev.destination)}</span>
+              <span class="muted">${esc(ev.detail)}${ev.rule ? ' · Règle : ' + esc(ev.rule) : ''}</span>
+            </div>
+          `).join("") || '<span class="muted">Aucun événement réseau enregistré.</span>'}
+        </div>
+      `;
+      document.getElementById("toggleShieldBtn").onclick = () => postCmd("toggle_shield", {});
+      document.getElementById("addExcBtn").onclick = () => {
+        const d = document.getElementById("excInput").value.trim();
+        if (d) postCmd("add_exception", { domain: d });
+      };
+    }
+
+    function renderBookmarks(body) {
+      body.innerHTML = `
+        <div class="section-box">
+          <button class="btn primary" id="addBmBtn">Ajouter l'onglet actif aux favoris</button>
+        </div>
+        ${(snap.bookmarks || []).map((b) => `
+          <div class="list-item">
+            <a onclick="postCmd('navigate', { url: '${esc(b.url)}' })">${esc(b.title || b.url)}</a>
+            <div class="row">
+              <span class="mono muted">${esc(b.url)}</span>
+              <button class="btn danger" onclick="postCmd('delete_bookmark', { id: '${esc(b.id)}' })">Suppr.</button>
+            </div>
+          </div>
+        `).join("") || '<span class="muted">Aucun favori enregistré.</span>'}
+      `;
+      document.getElementById("addBmBtn").onclick = () => postCmd("add_bookmark", {});
+    }
+
+    function renderHistory(body) {
+      body.innerHTML = `
+        <div class="section-box">
+          <div class="row">
+            <span class="muted">Seuls les onglets normaux sont journalisés (les onglets privés n'écrivent jamais dans SQLite).</span>
+            <button class="btn danger" id="clearHistBtn">Purger</button>
+          </div>
+        </div>
+        ${(snap.history || []).map((h) => `
+          <div class="list-item">
+            <a onclick="postCmd('navigate', { url: '${esc(h.url)}' })">${esc(h.title || h.url)}</a>
+            <span class="mono muted">${esc(h.url)}</span>
+          </div>
+        `).join("") || '<span class="muted">Historique vide.</span>'}
+      `;
+      document.getElementById("clearHistBtn").onclick = () => postCmd("clear_history", {});
+    }
+
+    function renderDownloads(body) {
+      body.innerHTML = (snap.downloads || []).map((d) => `
+        <div class="list-item">
+          <div class="row"><strong>${esc(d.filename)}</strong><span class="badge">${esc(d.status)}</span></div>
+          <span class="mono muted">${esc(d.save_path)}</span>
+          <span class="mono muted">${esc(d.url)}</span>
+        </div>
+      `).join("") || '<span class="muted">Aucun téléchargement enregistré dans cette session.</span>';
+    }
+
+    function renderSpaces(body) {
+      body.innerHTML = `
+        <div class="section-box">
+          <strong>Espaces de travail</strong>
+          <div class="row">
+            <input id="spaceNameInput" placeholder="Nouvel espace (ex: Recherche)" />
+            <button class="btn primary" id="createSpaceBtn">Créer</button>
+          </div>
+          ${(snap.spaces || []).map((s) => `
+            <div class="row list-item" style="flex-direction:row;">
+              <span>● ${esc(s.name)}</span>
+              <button class="btn ${s.id === snap.active_space_id ? 'primary' : ''}" onclick="postCmd('select_space', { space_id: '${esc(s.id)}' })">
+                ${s.id === snap.active_space_id ? 'Actif' : 'Ouvrir'}
+              </button>
+            </div>
+          `).join("")}
+        </div>
+
+        <div class="section-box">
+          <strong>Sessions sauvegardées (métadonnées SQLite)</strong>
+          <p class="muted">La sauvegarde et la suspension conservent l'URL, le titre et la position ; le DOM JS non validé est rechargé à la restauration.</p>
+          <div class="row">
+            <input id="sessionNameInput" placeholder="Nom de session" />
+            <button class="btn primary" id="saveSessionBtn">Sauver</button>
+          </div>
+          ${(snap.sessions || []).map((s) => `
+            <div class="row list-item" style="flex-direction:row;">
+              <span>${esc(s.name)}</span>
+              <button class="btn" onclick="postCmd('restore_session', { id: '${esc(s.id)}' })">Restaurer</button>
+            </div>
+          `).join("")}
+        </div>
+      `;
+      document.getElementById("createSpaceBtn").onclick = () => {
+        const name = document.getElementById("spaceNameInput").value.trim();
+        if (name) postCmd("create_space", { name });
+      };
+      document.getElementById("saveSessionBtn").onclick = () => {
+        const name = document.getElementById("sessionNameInput").value.trim() || "Session";
+        postCmd("save_session", { name });
+      };
+    }
+
+    function renderNotes(body) {
+      body.innerHTML = `
+        <div class="section-box">
+          <strong>Nouvelle note liée à la page</strong>
+          <input id="noteTitle" placeholder="Titre de la note" />
+          <textarea id="noteContent" rows="4" placeholder="Contenu..."></textarea>
+          <button class="btn primary" id="saveNoteBtn">Enregistrer dans SQLite</button>
+        </div>
+        ${(snap.notes || []).map((n) => `
+          <div class="list-item">
+            <div class="row">
+              <strong>${esc(n.title)}</strong>
+              <button class="btn danger" onclick="postCmd('delete_note', { id: '${esc(n.id)}' })">Suppr.</button>
+            </div>
+            <p>${esc(n.content)}</p>
+            ${n.url ? `<span class="mono muted">${esc(n.url)}</span>` : ''}
+          </div>
+        `).join("") || '<span class="muted">Aucune note enregistrée.</span>'}
+      `;
+      document.getElementById("saveNoteBtn").onclick = () => {
+        const title = document.getElementById("noteTitle").value.trim() || "Note";
+        const content = document.getElementById("noteContent").value.trim();
+        if (content) postCmd("save_note", { title, content });
+      };
+    }
+
+    function renderPulse(body) {
+      const p = snap.last_pulse;
+      body.innerHTML = `
+        <div class="section-box">
+          <strong>Sonde Réseau Réelle (NetworkPulse)</strong>
+          <p class="muted">Mesure socket TCP/TLS réelle sans aucun ratio simulé ni note arbitraire.</p>
+          <button class="btn primary" id="runPulseBtn">Mesurer l'URL active (3 échantillons)</button>
+        </div>
+        ${p ? `
+          <div class="section-box">
+            <div class="row"><strong>Cible</strong><span class="mono">${esc(p.url)}</span></div>
+            <div class="row muted"><span>Réussis</span><span class="mono">${p.samples_succeeded}/${p.samples_requested}</span></div>
+            <div class="row muted"><span>DNS (p50 / p95)</span><span class="mono">${p.dns_p50.toFixed(1)} ms / ${p.dns_p95.toFixed(1)} ms</span></div>
+            <div class="row muted"><span>TCP (p50 / p95)</span><span class="mono">${p.tcp_p50.toFixed(1)} ms / ${p.tcp_p95.toFixed(1)} ms</span></div>
+            <div class="row muted"><span>TLS (p50 / p95)</span><span class="mono">${p.tls_p50.toFixed(1)} ms / ${p.tls_p95.toFixed(1)} ms</span></div>
+            <div class="row muted"><span>TTFB (p50 / p95)</span><span class="mono">${p.ttfb_p50.toFixed(1)} ms / ${p.ttfb_p95.toFixed(1)} ms</span></div>
+          </div>
+        ` : '<span class="muted">Aucune sonde lancée dans cette session.</span>'}
+      `;
+      document.getElementById("runPulseBtn").onclick = () => postCmd("run_pulse", {});
+    }
+
+    function renderSettings(body) {
+      body.innerHTML = `
+        <div class="section-box">
+          <strong>Apparence</strong>
+          <div class="row">
+            <span>Thème</span>
+            <div style="display:flex;gap:6px;">
+              <button class="btn ${snap.theme === 'dark' ? 'primary' : ''}" onclick="postCmd('set_theme', { theme: 'dark' })">Sombre</button>
+              <button class="btn ${snap.theme === 'light' ? 'primary' : ''}" onclick="postCmd('set_theme', { theme: 'light' })">Clair</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-box">
+          <strong>Moteur de recherche par défaut</strong>
+          <select id="searchEngineSel">
+            <option value="duckduckgo" ${snap.search_engine === 'duckduckgo' ? 'selected' : ''}>DuckDuckGo</option>
+            <option value="startpage" ${snap.search_engine === 'startpage' ? 'selected' : ''}>Startpage</option>
+            <option value="qwant" ${snap.search_engine === 'qwant' ? 'selected' : ''}>Qwant</option>
+          </select>
+        </div>
+
+        <div class="section-box">
+          <strong>Profils & Confidentialité</strong>
+          <div class="row muted"><span>Profil actif</span><strong class="mono">${esc(snap.profile_name)}</strong></div>
+          <div class="row muted"><span>Répertoire isolé</span></div>
+          <span class="mono muted" style="word-break:break-all;">${esc(snap.profile_dir)}</span>
+          <div class="row">
+            <input id="newProfileInput" placeholder="Nouveau profil (ex: Perso)" />
+            <button class="btn primary" id="switchProfileBtn">Ouvrir</button>
+          </div>
+          <button class="btn danger" id="purgeProfileBtn">Purger cache & cookies WebView</button>
+        </div>
+      `;
+      document.getElementById("searchEngineSel").onchange = (e) => {
+        postCmd("set_search_engine", { engine: e.target.value });
+      };
+      document.getElementById("switchProfileBtn").onclick = () => {
+        const name = document.getElementById("newProfileInput").value.trim();
+        if (name) postCmd("switch_profile", { name });
+      };
+      document.getElementById("purgeProfileBtn").onclick = () => postCmd("purge_profile_data", {});
+    }
+
+    window.applyPanelData = (data) => {
+      snap = data;
+      document.documentElement.setAttribute("data-theme", snap.theme || "dark");
+      const titles = {
+        shield: "Orakle Shield",
+        bookmarks: "Favoris",
+        history: "Historique",
+        downloads: "Téléchargements",
+        spaces: "Espaces & Sessions",
+        notes: "Notes",
+        pulse: "Sonde Pulse",
+        settings: "Paramètres & Profils",
+      };
+      document.getElementById("panelTitle").textContent = titles[snap.section] || "Orakle";
+      document.querySelectorAll(".nav-pill").forEach((b) => {
+        b.classList.toggle("active", b.dataset.sec === snap.section);
+      });
+      const body = document.getElementById("panelBody");
+      if (snap.section === "shield") renderShield(body);
+      else if (snap.section === "bookmarks") renderBookmarks(body);
+      else if (snap.section === "history") renderHistory(body);
+      else if (snap.section === "downloads") renderDownloads(body);
+      else if (snap.section === "spaces") renderSpaces(body);
+      else if (snap.section === "notes") renderNotes(body);
+      else if (snap.section === "pulse") renderPulse(body);
+      else renderSettings(body);
+    };
+    postCmd("ui_ready", {});
+  </script>
+</body>
+</html>

@@ -1,7 +1,7 @@
-use std::path::Path;
+use crate::error::Result;
 use rusqlite::{params, Connection, Transaction};
 use serde::{Deserialize, Serialize};
-use crate::error::Result;
+use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Space {
@@ -12,16 +12,65 @@ pub struct Space {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProfileRecord {
+    pub id: String,
+    pub name: String,
+    pub data_dir: String,
+    pub is_ephemeral: bool,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct TabGroup {
+    pub id: String,
+    pub space_id: String,
+    pub name: String,
+    pub color: String,
+    pub collapsed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TabRecord {
     pub id: String,
     pub space_id: String,
+    pub group_id: Option<String>,
     pub url: String,
     pub title: String,
     pub is_pinned: bool,
     pub is_suspended: bool,
+    pub is_incognito: bool,
     pub position: i32,
     pub scroll_y: i32,
     pub last_active_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SessionRecord {
+    pub id: String,
+    pub name: String,
+    pub space_id: String,
+    pub snapshot_json: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct DownloadRecord {
+    pub id: String,
+    pub url: String,
+    pub filename: String,
+    pub save_path: String,
+    pub status: String,
+    pub bytes_received: i64,
+    pub started_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct NoteEntry {
+    pub id: String,
+    pub title: String,
+    pub content: String,
+    pub url: Option<String>,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -145,18 +194,74 @@ impl StorageEngine {
             tx.commit()?;
         }
 
+        if current_version < 2 {
+            let tx = self.conn.unchecked_transaction()?;
+            tx.execute_batch(
+                "CREATE TABLE IF NOT EXISTS profiles (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    data_dir TEXT NOT NULL,
+                    is_ephemeral INTEGER NOT NULL DEFAULT 0,
+                    created_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS tab_groups (
+                    id TEXT PRIMARY KEY,
+                    space_id TEXT NOT NULL REFERENCES spaces(id) ON DELETE CASCADE,
+                    name TEXT NOT NULL,
+                    color TEXT NOT NULL,
+                    collapsed INTEGER NOT NULL DEFAULT 0
+                );
+
+                CREATE TABLE IF NOT EXISTS sessions (
+                    id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    space_id TEXT NOT NULL,
+                    snapshot_json TEXT NOT NULL,
+                    created_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS downloads (
+                    id TEXT PRIMARY KEY,
+                    url TEXT NOT NULL,
+                    filename TEXT NOT NULL,
+                    save_path TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    bytes_received INTEGER NOT NULL DEFAULT 0,
+                    started_at INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS notes (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    url TEXT,
+                    updated_at INTEGER NOT NULL
+                );
+
+                ALTER TABLE tabs ADD COLUMN group_id TEXT;
+                ALTER TABLE tabs ADD COLUMN is_incognito INTEGER NOT NULL DEFAULT 0;
+
+                INSERT INTO schema_migrations (version, applied_at) VALUES (2, strftime('%s', 'now'));",
+            )?;
+            tx.commit()?;
+        }
+
         Ok(())
     }
 
     /// Exécute un contrôle d'intégrité formel SQLite
     pub fn check_integrity(&self) -> Result<bool> {
-        let result: String = self.conn.query_row("PRAGMA integrity_check;", [], |row| row.get(0))?;
+        let result: String = self
+            .conn
+            .query_row("PRAGMA integrity_check;", [], |row| row.get(0))?;
         Ok(result == "ok")
     }
 
     /// Force un checkpoint WAL pour synchroniser les pages disques
     pub fn checkpoint_wal(&self) -> Result<()> {
-        self.conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
+        self.conn
+            .execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
 
@@ -170,7 +275,9 @@ impl StorageEngine {
     }
 
     pub fn get_spaces(&self) -> Result<Vec<Space>> {
-        let mut stmt = self.conn.prepare("SELECT id, name, color, created_at FROM spaces ORDER BY created_at ASC;")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, name, color, created_at FROM spaces ORDER BY created_at ASC;")?;
         let rows = stmt.query_map([], |row| {
             Ok(Space {
                 id: row.get(0)?,
@@ -187,27 +294,31 @@ impl StorageEngine {
         Ok(spaces)
     }
 
-    // --- Opérations Onglets (Tabs & Tab Discarding) ---
+    // --- Opérations Onglets (Tabs, Groupes & Tab Discarding) ---
     pub fn upsert_tab(&self, tab: &TabRecord) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO tabs (id, space_id, url, title, is_pinned, is_suspended, position, scroll_y, last_active_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "INSERT INTO tabs (id, space_id, group_id, url, title, is_pinned, is_suspended, is_incognito, position, scroll_y, last_active_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(id) DO UPDATE SET
                 space_id = excluded.space_id,
+                group_id = excluded.group_id,
                 url = excluded.url,
                 title = excluded.title,
                 is_pinned = excluded.is_pinned,
                 is_suspended = excluded.is_suspended,
+                is_incognito = excluded.is_incognito,
                 position = excluded.position,
                 scroll_y = excluded.scroll_y,
                 last_active_at = excluded.last_active_at;",
             params![
                 tab.id,
                 tab.space_id,
+                tab.group_id,
                 tab.url,
                 tab.title,
                 if tab.is_pinned { 1 } else { 0 },
                 if tab.is_suspended { 1 } else { 0 },
+                if tab.is_incognito { 1 } else { 0 },
                 tab.position,
                 tab.scroll_y,
                 tab.last_active_at,
@@ -218,7 +329,7 @@ impl StorageEngine {
 
     pub fn get_tabs_for_space(&self, space_id: &str) -> Result<Vec<TabRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, space_id, url, title, is_pinned, is_suspended, position, scroll_y, last_active_at
+            "SELECT id, space_id, group_id, url, title, is_pinned, is_suspended, is_incognito, position, scroll_y, last_active_at
              FROM tabs WHERE space_id = ?1 ORDER BY position ASC;",
         )?;
 
@@ -226,13 +337,15 @@ impl StorageEngine {
             Ok(TabRecord {
                 id: row.get(0)?,
                 space_id: row.get(1)?,
-                url: row.get(2)?,
-                title: row.get(3)?,
-                is_pinned: row.get::<_, i32>(4)? != 0,
-                is_suspended: row.get::<_, i32>(5)? != 0,
-                position: row.get(6)?,
-                scroll_y: row.get(7)?,
-                last_active_at: row.get(8)?,
+                group_id: row.get(2)?,
+                url: row.get(3)?,
+                title: row.get(4)?,
+                is_pinned: row.get::<_, i32>(5)? != 0,
+                is_suspended: row.get::<_, i32>(6)? != 0,
+                is_incognito: row.get::<_, i32>(7)? != 0,
+                position: row.get(8)?,
+                scroll_y: row.get(9)?,
+                last_active_at: row.get(10)?,
             })
         })?;
 
@@ -244,8 +357,38 @@ impl StorageEngine {
     }
 
     pub fn delete_tab(&self, tab_id: &str) -> Result<()> {
-        self.conn.execute("DELETE FROM tabs WHERE id = ?1;", params![tab_id])?;
+        self.conn
+            .execute("DELETE FROM tabs WHERE id = ?1;", params![tab_id])?;
         Ok(())
+    }
+
+    pub fn upsert_tab_group(&self, g: &TabGroup) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO tab_groups (id, space_id, name, color, collapsed) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, color=excluded.color, collapsed=excluded.collapsed;",
+            params![g.id, g.space_id, g.name, g.color, if g.collapsed { 1 } else { 0 }],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_tab_groups(&self, space_id: &str) -> Result<Vec<TabGroup>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, space_id, name, color, collapsed FROM tab_groups WHERE space_id = ?1;",
+        )?;
+        let rows = stmt.query_map(params![space_id], |row| {
+            Ok(TabGroup {
+                id: row.get(0)?,
+                space_id: row.get(1)?,
+                name: row.get(2)?,
+                color: row.get(3)?,
+                collapsed: row.get::<_, i32>(4)? != 0,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     // --- Opérations Historique & Batch ---
@@ -261,7 +404,9 @@ impl StorageEngine {
     pub fn insert_history_batch(&mut self, entries: &[HistoryEntry]) -> Result<usize> {
         let tx: Transaction = self.conn.transaction()?;
         {
-            let mut stmt = tx.prepare_cached("INSERT INTO history (url, title, visited_at) VALUES (?1, ?2, ?3);")?;
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO history (url, title, visited_at) VALUES (?1, ?2, ?3);",
+            )?;
             for e in entries {
                 stmt.execute(params![e.url, e.title, e.visited_at])?;
             }
@@ -294,6 +439,210 @@ impl StorageEngine {
         self.conn.execute("DELETE FROM history;", [])?;
         Ok(())
     }
+
+    // --- Opérations Favoris (Bookmarks) ---
+    pub fn upsert_bookmark(&self, b: &BookmarkEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO bookmarks (id, title, url, category, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET title=excluded.title, url=excluded.url, category=excluded.category;",
+            params![b.id, b.title, b.url, b.category, b.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_bookmarks(&self) -> Result<Vec<BookmarkEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, url, category, created_at FROM bookmarks ORDER BY created_at DESC;",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(BookmarkEntry {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                url: row.get(2)?,
+                category: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_bookmark(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM bookmarks WHERE id = ?1;", params![id])?;
+        Ok(())
+    }
+
+    // --- Opérations Sessions ---
+    pub fn save_session(&self, s: &SessionRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sessions (id, name, space_id, snapshot_json, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, snapshot_json=excluded.snapshot_json;",
+            params![s.id, s.name, s.space_id, s.snapshot_json, s.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_sessions(&self) -> Result<Vec<SessionRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, space_id, snapshot_json, created_at FROM sessions ORDER BY created_at DESC;",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(SessionRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                space_id: row.get(2)?,
+                snapshot_json: row.get(3)?,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_session(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM sessions WHERE id = ?1;", params![id])?;
+        Ok(())
+    }
+
+    // --- Opérations Téléchargements (Downloads) ---
+    pub fn upsert_download(&self, d: &DownloadRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO downloads (id, url, filename, save_path, status, bytes_received, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET status=excluded.status, bytes_received=excluded.bytes_received, save_path=excluded.save_path;",
+            params![d.id, d.url, d.filename, d.save_path, d.status, d.bytes_received, d.started_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_downloads(&self) -> Result<Vec<DownloadRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, url, filename, save_path, status, bytes_received, started_at FROM downloads ORDER BY started_at DESC LIMIT 100;",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(DownloadRecord {
+                id: row.get(0)?,
+                url: row.get(1)?,
+                filename: row.get(2)?,
+                save_path: row.get(3)?,
+                status: row.get(4)?,
+                bytes_received: row.get(5)?,
+                started_at: row.get(6)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    // --- Opérations Notes ---
+    pub fn upsert_note(&self, n: &NoteEntry) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO notes (id, title, content, url, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET title=excluded.title, content=excluded.content, url=excluded.url, updated_at=excluded.updated_at;",
+            params![n.id, n.title, n.content, n.url, n.updated_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_notes(&self) -> Result<Vec<NoteEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, title, content, url, updated_at FROM notes ORDER BY updated_at DESC;",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(NoteEntry {
+                id: row.get(0)?,
+                title: row.get(1)?,
+                content: row.get(2)?,
+                url: row.get(3)?,
+                updated_at: row.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn delete_note(&self, id: &str) -> Result<()> {
+        self.conn
+            .execute("DELETE FROM notes WHERE id = ?1;", params![id])?;
+        Ok(())
+    }
+
+    // --- Opérations Profils & Paramètres ---
+    pub fn upsert_profile(&self, p: &ProfileRecord) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO profiles (id, name, data_dir, is_ephemeral, created_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(id) DO UPDATE SET name=excluded.name, data_dir=excluded.data_dir;",
+            params![p.id, p.name, p.data_dir, if p.is_ephemeral { 1 } else { 0 }, p.created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_profiles(&self) -> Result<Vec<ProfileRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, data_dir, is_ephemeral, created_at FROM profiles ORDER BY created_at ASC;",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(ProfileRecord {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                data_dir: row.get(2)?,
+                is_ephemeral: row.get::<_, i32>(3)? != 0,
+                created_at: row.get(4)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
+
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key = ?1;")?;
+        let mut rows = stmt.query(params![key])?;
+        if let Some(row) = rows.next()? {
+            Ok(Some(row.get(0)?))
+        } else {
+            Ok(None)
+        }
+    }
+
+    pub fn get_all_settings(&self) -> Result<Vec<(String, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT key, value FROM settings ORDER BY key ASC;")?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
+    }
 }
 
 #[cfg(test)]
@@ -314,17 +663,22 @@ mod tests {
         let bad_tab = TabRecord {
             id: "tab-orphan".to_string(),
             space_id: "space-does-not-exist".to_string(),
+            group_id: None,
             url: "https://bad.com".to_string(),
             title: "Bad".to_string(),
             is_pinned: false,
             is_suspended: false,
+            is_incognito: false,
             position: 0,
             scroll_y: 0,
             last_active_at: 1000,
         };
 
         let result = engine.upsert_tab(&bad_tab);
-        assert!(result.is_err(), "L'insertion d'un onglet orphelin doit être rejetée par PRAGMA foreign_keys");
+        assert!(
+            result.is_err(),
+            "L'insertion d'un onglet orphelin doit être rejetée par PRAGMA foreign_keys"
+        );
     }
 
     #[test]
@@ -342,10 +696,12 @@ mod tests {
         let mut tab = TabRecord {
             id: "tab-1".to_string(),
             space_id: "space-1".to_string(),
+            group_id: None,
             url: "https://doc.rust-lang.org".to_string(),
             title: "Rust Book".to_string(),
             is_pinned: false,
             is_suspended: false,
+            is_incognito: false,
             position: 0,
             scroll_y: 1250,
             last_active_at: 2000,
@@ -387,10 +743,59 @@ mod tests {
         let dur_batch = t_start_batch.elapsed();
         let per_item_batch = dur_batch.as_micros() as f64 / 1000.0;
 
-        println!("  [BENCHMARK SQLITE BATCH] 1 000 entrées insérées en {:?} ({:.2} µs/entrée)", dur_batch, per_item_batch);
-        assert!(per_item_batch < 50.0, "Le batch WAL doit être ultra-rapide (< 50 µs par entrée)");
+        println!(
+            "  [BENCHMARK SQLITE BATCH] 1 000 entrées insérées en {:?} ({:.2} µs/entrée)",
+            dur_batch, per_item_batch
+        );
+        assert!(
+            per_item_batch < 50.0,
+            "Le batch WAL doit être ultra-rapide (< 50 µs par entrée)"
+        );
 
         let history = engine.get_history(2000).unwrap();
         assert_eq!(history.len(), 1000);
+    }
+
+    #[test]
+    fn test_migration_v2_crud_entities() {
+        let engine = StorageEngine::open_in_memory().expect("open memory db");
+        engine
+            .upsert_bookmark(&BookmarkEntry {
+                id: "bm-1".into(),
+                title: "Rust Docs".into(),
+                url: "https://doc.rust-lang.org/".into(),
+                category: "Dev".into(),
+                created_at: 100,
+            })
+            .unwrap();
+        assert_eq!(engine.get_bookmarks().unwrap().len(), 1);
+
+        engine
+            .upsert_note(&NoteEntry {
+                id: "note-1".into(),
+                title: "Architecture".into(),
+                content: "Split View 50/50 validé".into(),
+                url: Some("https://doc.rust-lang.org/".into()),
+                updated_at: 200,
+            })
+            .unwrap();
+        assert_eq!(engine.get_notes().unwrap().len(), 1);
+
+        engine
+            .save_session(&SessionRecord {
+                id: "sess-1".into(),
+                name: "Session Dev".into(),
+                space_id: "default".into(),
+                snapshot_json: "[]".into(),
+                created_at: 300,
+            })
+            .unwrap();
+        assert_eq!(engine.get_sessions().unwrap().len(), 1);
+
+        engine.set_setting("theme", "light").unwrap();
+        assert_eq!(
+            engine.get_setting("theme").unwrap().as_deref(),
+            Some("light")
+        );
     }
 }

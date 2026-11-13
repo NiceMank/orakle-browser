@@ -1,0 +1,15 @@
+[package]
+name = "orakle-webkit-ext"
+version = "0.2.0"
+edition = "2021"
+description = "Extension WebKitWebProcess Linux (Niveau 2) reliant send-request au moteur orakle-core::ShieldEngine."
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+orakle-core = { path = "../orakle-core" }
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"

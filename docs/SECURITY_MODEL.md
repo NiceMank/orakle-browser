@@ -1,7 +1,7 @@
 # Orakle Browser — Modèle de Menace et Architecture de Sécurité
 
 - **Version** : 2.0.0
-- **Statut** : Document de référence sécurité (aligné Phase 3)
+- **Statut** : Document de référence sécurité (aligné Phase 4)
 - **Dernière mise à jour** : 2026-11-13
 
 ---
@@ -22,8 +22,8 @@
 
 | Vecteur de Menace | Risque Potentiel | Mesure de Protection Orakle |
 |---|---|---|
-| **Contenu Web Malveillant (Drive-by Download, Exploit)** | Exécution de code natif non autorisé sur la machine hôte. | • Isolation totale de la WebView par bac à sable système (Sandbox natif Linux/Windows).<br>• Aucune commande IPC exposée sans passer par un schéma de validation typé et validé par Rust.<br>• `nodeIntegration: false`, `contextIsolation: true`. |
-| **Pistage Publicitaire & Empreinte (Fingerprinting)** | Surveillance des habitudes de navigation et profilage publicitaire par des tiers. | • Orakle Shield + `SecureLoopbackProxy` (`crates/orakle-core/src/proxy.rs`) : filtrage `adblock` v0.13.5 **avant résolution DNS** (zéro fuite DNS), sans déchiffrement MITM TLS.<br>• Filtrage de niveau 2 par hooks natifs OS et nettoyage d'URL prévus en Phase 4. |
+| **Contenu Web Malveillant (Drive-by Download, Exploit)** | Exécution de code natif non autorisé sur la machine hôte. | • Isolation totale de la WebView par bac à sable système (`with_ipc_handler` absent des WebViews distantes).<br>• Validation stricte d'URL (`validate_navigation_url` : rejet `javascript:`, `file:`, `data:`, `localhost`, RFC1918/metadata). |
+| **Pistage Publicitaire & Empreinte (Fingerprinting)** | Surveillance des habitudes de navigation et profilage publicitaire par des tiers. | • Orakle Shield + `SecureLoopbackProxy` (`HTTP`/`CONNECT`/`SOCKS5` pré-DNS, Zero-MITM) + extension native Linux `liborakle_webkit_ext.so` (`send-request` Niveau 2, sans réécriture de corps). |
 | **SSRF, DNS Rebinding & Fuites Réseau Proxy** | Accès au réseau local (`127.0.0.0/8`, `169.254.0.0/16`, `100.64.0.0/10`, `::ffff:...`, RFC1918, ULA) ou contournement silencieux lors d'erreurs proxy. | • Blocage strict des IP privées/loopback/métadonnées (`is_forbidden_private_ip`) et des ports non HTTP/HTTPS (`80`/`443` par défaut).<br>• Résolution DNS validée sur toutes les adresses IP avant ouverture de socket (anti-DNS-rebinding).<br>• Politique **fail-closed** (`403` / `502`, zéro connexion directe de repli). |
 | **Fuite de Cookies et Sessions Cross-Site** | Vol de session utilisateur, attaques CSRF ou écoute réseau. | • Cloisonnement via `with_incognito(true)` dans `orakle-app` (store non persistant en RAM, validé sur le Split View droit).<br>• Zéro interception MITM TLS sur `CONNECT` (la vérification de certificats reste assurée nativement par la WebView et `rustls`/`webpki-roots`). |
 | **Téléchargements Dangereux** | Téléchargement accidentel d'exécutables piégés. | • Invite de confirmation systématique avant enregistrement sur disque.<br>• Affichage clair de l'extension et de la taille du fichier. |

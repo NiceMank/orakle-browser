@@ -1,9 +1,9 @@
+use orakle_core::proxy::{ProxyConfig, SecureLoopbackProxy};
+use orakle_core::shield::ShieldEngine;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::TcpListener;
-use orakle_core::proxy::{ProxyConfig, ProxyDecision, SecureLoopbackProxy};
-use orakle_core::shield::ShieldEngine;
 
 const HARNESS_RULES: &str = "
 ||doubleclick.net^
@@ -12,7 +12,10 @@ const HARNESS_RULES: &str = "
 @@/ads/sponsor-allowed.js
 ";
 
-async fn spawn_origin_a(port_b_holder: Arc<Mutex<u16>>, hits_a: Arc<Mutex<Vec<String>>>) -> SocketAddr {
+async fn spawn_origin_a(
+    port_b_holder: Arc<Mutex<u16>>,
+    hits_a: Arc<Mutex<Vec<String>>>,
+) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -60,7 +63,8 @@ async fn spawn_origin_a(port_b_holder: Arc<Mutex<u16>>, hits_a: Arc<Mutex<Vec<St
                         let _ = tokio::time::timeout(
                             std::time::Duration::from_millis(1000),
                             stream.read(&mut drain),
-                        ).await;
+                        )
+                        .await;
                         return;
                     }
 
@@ -159,10 +163,26 @@ async fn spawn_origin_b(hits_b: Arc<Mutex<Vec<String>>>) -> SocketAddr {
                     hits.lock().unwrap().push(path.to_string());
 
                     let (status, ctype, body) = match path {
-                        "/third-party.js" => ("200 OK", "application/javascript", "window.thirdPartyLoaded = true;"),
-                        "/tracker-pixel.js" => ("200 OK", "application/javascript", "window.trackerLoaded = true;"),
-                        "/ads/banner.js" => ("200 OK", "application/javascript", "window.adBannerLoaded = true;"),
-                        "/ads/sponsor-allowed.js" => ("200 OK", "application/javascript", "window.sponsorExceptionLoaded = true;"),
+                        "/third-party.js" => (
+                            "200 OK",
+                            "application/javascript",
+                            "window.thirdPartyLoaded = true;",
+                        ),
+                        "/tracker-pixel.js" => (
+                            "200 OK",
+                            "application/javascript",
+                            "window.trackerLoaded = true;",
+                        ),
+                        "/ads/banner.js" => (
+                            "200 OK",
+                            "application/javascript",
+                            "window.adBannerLoaded = true;",
+                        ),
+                        "/ads/sponsor-allowed.js" => (
+                            "200 OK",
+                            "application/javascript",
+                            "window.sponsorExceptionLoaded = true;",
+                        ),
                         _ => ("404 Not Found", "text/plain", "Not Found"),
                     };
 
@@ -202,7 +222,12 @@ fn sha1_bytes(data: &[u8]) -> [u8; 20] {
     for chunk in padded.chunks_exact(64) {
         let mut w = [0u32; 80];
         for i in 0..16 {
-            w[i] = u32::from_be_bytes([chunk[4 * i], chunk[4 * i + 1], chunk[4 * i + 2], chunk[4 * i + 3]]);
+            w[i] = u32::from_be_bytes([
+                chunk[4 * i],
+                chunk[4 * i + 1],
+                chunk[4 * i + 2],
+                chunk[4 * i + 3],
+            ]);
         }
         for i in 16..80 {
             w[i] = (w[i - 3] ^ w[i - 8] ^ w[i - 14] ^ w[i - 16]).rotate_left(1);
@@ -215,7 +240,12 @@ fn sha1_bytes(data: &[u8]) -> [u8; 20] {
                 40..=59 => ((b & c) | (b & d) | (c & d), 0x8F1BBCDC),
                 _ => (b ^ c ^ d, 0xCA62C1D6),
             };
-            let temp = a.rotate_left(5).wrapping_add(f).wrapping_add(e).wrapping_add(k).wrapping_add(w[i]);
+            let temp = a
+                .rotate_left(5)
+                .wrapping_add(f)
+                .wrapping_add(e)
+                .wrapping_add(k)
+                .wrapping_add(w[i]);
             e = d;
             d = c;
             c = b.rotate_left(30);
@@ -246,8 +276,16 @@ fn base64_encode(input: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(TABLE[((n >> 18) & 63) as usize] as char);
         out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { TABLE[((n >> 6) & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { TABLE[(n & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 1 {
+            TABLE[((n >> 6) & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            TABLE[(n & 63) as usize] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -269,22 +307,32 @@ async fn main() {
     let (proxy, shutdown_rx) = SecureLoopbackProxy::new(config, shield);
     let proxy_addr = proxy.start(shutdown_rx).await.expect("start proxy");
 
-    println!("HARNESS_READY proxy={} origin_a={} origin_b={}", proxy_addr, addr_a, addr_b);
+    println!(
+        "HARNESS_READY proxy={} origin_a={} origin_b={}",
+        proxy_addr, addr_a, addr_b
+    );
     let mut stdin_reader = BufReader::new(tokio::io::stdin()).lines();
     let _ = stdin_reader.next_line().await;
 
     let tel = proxy.telemetry_snapshot();
-    println!("PROXY_TELEMETRY total={} allowed={} blocked_shield={} blocked_ssrf={} blocked_port={}",
-        tel.total_requests, tel.allowed_requests, tel.blocked_by_shield, tel.blocked_ssrf, tel.blocked_port);
+    println!(
+        "PROXY_TELEMETRY total={} allowed={} blocked_shield={} blocked_ssrf={} blocked_port={}",
+        tel.total_requests,
+        tel.allowed_requests,
+        tel.blocked_by_shield,
+        tel.blocked_ssrf,
+        tel.blocked_port
+    );
     for ev in &tel.events {
-        let label = match &ev.decision {
-            ProxyDecision::Allowed => "ALLOWED".to_string(),
-            ProxyDecision::BlockedByShield(r) => format!("BLOCKED_SHIELD({:?})", r),
-            ProxyDecision::BlockedSsrf(ip) => format!("BLOCKED_SSRF({})", ip),
-            ProxyDecision::BlockedPort(p) => format!("BLOCKED_PORT({})", p),
-            ProxyDecision::UpstreamError(e) => format!("UPSTREAM_ERR({})", e),
+        let label = if ev.blocked {
+            format!("BLOCKED({}, {:?})", ev.detail, ev.rule)
+        } else {
+            "ALLOWED".to_string()
         };
-        println!("EVENT method={} dest={} decision={}", ev.method, ev.destination, label);
+        println!(
+            "EVENT method={} dest={} decision={}",
+            ev.method, ev.destination, label
+        );
     }
     println!("ORIGIN_A_HITS={:?}", *hits_a.lock().unwrap());
     println!("ORIGIN_B_HITS={:?}", *hits_b.lock().unwrap());

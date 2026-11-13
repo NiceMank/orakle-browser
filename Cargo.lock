@@ -1762,6 +1762,8 @@ dependencies = [
  "tao",
  "tempfile",
  "tokio",
+ "url",
+ "webkit2gtk",
  "wry",
 ]
 
@@ -1783,6 +1785,15 @@ dependencies = [
  "tracing",
  "url",
  "webpki-roots",
+]
+
+[[package]]
+name = "orakle-webkit-ext"
+version = "0.2.0"
+dependencies = [
+ "cc",
+ "orakle-core",
+ "pkg-config",
 ]
 
 [[package]]

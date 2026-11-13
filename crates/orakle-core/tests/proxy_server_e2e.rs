@@ -1,9 +1,9 @@
+use orakle_core::proxy::{validate_navigation_url, ProxyConfig, SecureLoopbackProxy};
+use orakle_core::shield::ShieldEngine;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-use orakle_core::proxy::{ProxyConfig, ProxyDecision, SecureLoopbackProxy};
-use orakle_core::shield::ShieldEngine;
 
 const TEST_RULES: &str = "
 ||tracker.analytics.local^
@@ -48,7 +48,9 @@ async fn spawn_mock_web_server() -> SocketAddr {
                     let first_line = req_str.lines().next().unwrap_or("");
 
                     // Support WebSocket Handshake
-                    if req_str.to_ascii_lowercase().contains("upgrade: websocket") && first_line.contains("/ws") {
+                    if req_str.to_ascii_lowercase().contains("upgrade: websocket")
+                        && first_line.contains("/ws")
+                    {
                         let resp = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=\r\n\r\n";
                         let _ = stream.write_all(resp.as_bytes()).await;
                         // Echo simple de la charge WebSocket reçue
@@ -61,7 +63,9 @@ async fn spawn_mock_web_server() -> SocketAddr {
                         return;
                     }
 
-                    let (status, extra_headers, content_type, body) = if first_line.contains("/index.html") {
+                    let (status, extra_headers, content_type, body) = if first_line
+                        .contains("/index.html")
+                    {
                         (
                             "200 OK",
                             "",
@@ -69,17 +73,47 @@ async fn spawn_mock_web_server() -> SocketAddr {
                             "<html><body><h1>Orakle Test</h1><script src='/app.js'></script><img src='/logo.svg'/></body></html>",
                         )
                     } else if first_line.contains("/app.js") {
-                        ("200 OK", "", "application/javascript", "console.log('App Loaded');")
+                        (
+                            "200 OK",
+                            "",
+                            "application/javascript",
+                            "console.log('App Loaded');",
+                        )
                     } else if first_line.contains("/vendor.js") {
-                        ("200 OK", "", "application/javascript", "window.vendorReady = true;")
+                        (
+                            "200 OK",
+                            "",
+                            "application/javascript",
+                            "window.vendorReady = true;",
+                        )
                     } else if first_line.contains("/ads/allowed-sponsor-notice.js") {
-                        ("200 OK", "", "application/javascript", "console.log('Exception JS Loaded');")
+                        (
+                            "200 OK",
+                            "",
+                            "application/javascript",
+                            "console.log('Exception JS Loaded');",
+                        )
                     } else if first_line.contains("/logo.svg") {
-                        ("200 OK", "", "image/svg+xml", "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'></svg>")
+                        (
+                            "200 OK",
+                            "",
+                            "image/svg+xml",
+                            "<svg xmlns='http://www.w3.org/2000/svg' width='16' height='16'></svg>",
+                        )
                     } else if first_line.contains("/redirect") {
-                        ("302 Found", "Location: /index.html\r\n", "text/plain", "Redirecting...")
+                        (
+                            "302 Found",
+                            "Location: /index.html\r\n",
+                            "text/plain",
+                            "Redirecting...",
+                        )
                     } else if first_line.contains("/api/data") {
-                        ("200 OK", "", "application/json", "{\"status\":\"ok\",\"engine\":\"orakle-core\"}")
+                        (
+                            "200 OK",
+                            "",
+                            "application/json",
+                            "{\"status\":\"ok\",\"engine\":\"orakle-core\"}",
+                        )
                     } else {
                         ("404 Not Found", "", "text/plain", "Not Found")
                     };
@@ -111,7 +145,10 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
 
     let (proxy, shutdown_rx) = SecureLoopbackProxy::new(test_config, shield.clone());
     let proxy_addr = proxy.start(shutdown_rx).await.expect("Démarrage du proxy");
-    println!("  [1] Proxy de routage démarré sur : {} (mock sur {})", proxy_addr, mock_addr);
+    println!(
+        "  [1] Proxy de routage démarré sur : {} (mock sur {})",
+        proxy_addr, mock_addr
+    );
 
     // 1. HTML + Multiples JS + Image + Fetch + Redirection 302 via le Proxy
     let allowed_paths = [
@@ -132,9 +169,16 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
         client.write_all(req.as_bytes()).await.unwrap();
         let resp = read_http_response(&mut client).await;
         assert!(resp.contains(expected_status), "Échec {} : {}", path, resp);
-        assert!(resp.contains(expected_substr), "Contenu manquant {} : {}", path, resp);
+        assert!(
+            resp.contains(expected_substr),
+            "Contenu manquant {} : {}",
+            path,
+            resp
+        );
     }
-    println!("  [2] Ressources HTML, JS multiples, Image SVG, API JSON et 302 routées avec succès.");
+    println!(
+        "  [2] Ressources HTML, JS multiples, Image SVG, API JSON et 302 routées avec succès."
+    );
 
     // 2. Vérification des règles de blocage HTTP & des exceptions @@
     {
@@ -146,7 +190,10 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
         );
         client.write_all(req.as_bytes()).await.unwrap();
         let resp = read_http_response(&mut client).await;
-        assert!(resp.contains("403 Forbidden"), "Le traqueur JS doit être bloqué");
+        assert!(
+            resp.contains("403 Forbidden"),
+            "Le traqueur JS doit être bloqué"
+        );
 
         // Bloqué par règle /ads/*
         let mut client_ads = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
@@ -156,7 +203,10 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
         );
         client_ads.write_all(req_ads.as_bytes()).await.unwrap();
         let resp_ads = read_http_response(&mut client_ads).await;
-        assert!(resp_ads.contains("403 Forbidden"), "/ads/banner.js doit être bloqué");
+        assert!(
+            resp_ads.contains("403 Forbidden"),
+            "/ads/banner.js doit être bloqué"
+        );
 
         // Exception @@/ads/allowed-sponsor-notice.js doit passer !
         let mut client_exc = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
@@ -166,7 +216,10 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
         );
         client_exc.write_all(req_exc.as_bytes()).await.unwrap();
         let resp_exc = read_http_response(&mut client_exc).await;
-        assert!(resp_exc.contains("200 OK"), "L'exception @@ doit être respectée");
+        assert!(
+            resp_exc.contains("200 OK"),
+            "L'exception @@ doit être respectée"
+        );
         assert!(resp_exc.contains("Exception JS Loaded"));
     }
     println!("  [3] Blocage sous-ressources et respect des exceptions @@ validés.");
@@ -204,11 +257,20 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
         let (dead_proxy, dead_rx) = SecureLoopbackProxy::new(cfg_dead, shield.clone());
         let dead_proxy_addr = dead_proxy.start(dead_rx).await.unwrap();
 
-        let mut c = tokio::net::TcpStream::connect(dead_proxy_addr).await.unwrap();
-        let req = format!("CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n", dead_port, dead_port);
+        let mut c = tokio::net::TcpStream::connect(dead_proxy_addr)
+            .await
+            .unwrap();
+        let req = format!(
+            "CONNECT 127.0.0.1:{} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\n\r\n",
+            dead_port, dead_port
+        );
         c.write_all(req.as_bytes()).await.unwrap();
         let resp = read_http_response(&mut c).await;
-        assert!(resp.contains("502 Bad Gateway"), "Doit échouer proprement en 502 : {}", resp);
+        assert!(
+            resp.contains("502 Bad Gateway"),
+            "Doit échouer proprement en 502 : {}",
+            resp
+        );
         dead_proxy.shutdown();
     }
     println!("  [5] Comportement fail-closed (502 Bad Gateway sur erreur amont) validé.");
@@ -217,11 +279,99 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
     let tel = proxy.telemetry_snapshot();
     assert_eq!(tel.allowed_requests, 8); // 6 ressources + 1 exception + 1 WS
     assert_eq!(tel.blocked_by_shield, 2); // /blocked-tracker.js + /ads/banner.js
-    assert!(tel.events.iter().any(|e| e.destination.contains("/index.html") && e.decision == ProxyDecision::Allowed));
-    assert!(tel.events.iter().any(|e| e.destination.contains("/blocked-tracker.js") && matches!(e.decision, ProxyDecision::BlockedByShield(_))));
-    println!("  [6] Télémétrie Proxy vérifiée : {} requêtes routées, {} bloquées par Shield.", tel.allowed_requests, tel.blocked_by_shield);
+    assert!(tel
+        .events
+        .iter()
+        .any(|e| e.destination.contains("/index.html") && !e.blocked));
+    assert!(tel
+        .events
+        .iter()
+        .any(|e| e.destination.contains("/blocked-tracker.js") && e.blocked));
+    println!(
+        "  [6] Télémétrie Proxy vérifiée : {} requêtes routées, {} bloquées par Shield.",
+        tel.allowed_requests, tel.blocked_by_shield
+    );
+
+    // 5b. Tunnel WebSocket ws:// via SOCKS5 (IPv4) + IPv6 ::1 + arrêt proxy fail-closed
+    {
+        let mut s5 = tokio::net::TcpStream::connect(proxy_addr).await.unwrap();
+        s5.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+        let mut g = [0u8; 2];
+        s5.read_exact(&mut g).await.unwrap();
+        assert_eq!(g, [0x05, 0x00]);
+
+        let ip_bytes = match mock_addr.ip() {
+            std::net::IpAddr::V4(v4) => v4.octets(),
+            _ => panic!("expected ipv4"),
+        };
+        let mut req = vec![0x05, 0x01, 0x00, 0x01];
+        req.extend_from_slice(&ip_bytes);
+        req.extend_from_slice(&mock_addr.port().to_be_bytes());
+        s5.write_all(&req).await.unwrap();
+        let mut rep = [0u8; 10];
+        s5.read_exact(&mut rep).await.unwrap();
+        assert_eq!(rep[1], 0x00, "SOCKS5 CONNECT vers mock web doit réussir");
+
+        let ws_upgrade = format!(
+            "GET /ws HTTP/1.1\r\nHost: {}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n",
+            mock_addr
+        );
+        s5.write_all(ws_upgrade.as_bytes()).await.unwrap();
+        let ws_resp = read_http_response(&mut s5).await;
+        assert!(ws_resp.contains("101 Switching Protocols"));
+        s5.write_all(b"SOCKS5_WS_OK").await.unwrap();
+        let mut echo = [0u8; 32];
+        let en = s5.read(&mut echo).await.unwrap();
+        assert_eq!(&echo[..en], b"SOCKS5_WS_OK");
+
+        // Vérification IPv6 [::1] si socket dual-stack bindable localement
+        if let Ok(v6_listener) = TcpListener::bind("[::1]:0").await {
+            let v6_addr = v6_listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                if let Ok((mut s, _)) = v6_listener.accept().await {
+                    let mut b = [0u8; 128];
+                    let n = s.read(&mut b).await.unwrap_or(0);
+                    let _ = s.write_all(&b[..n]).await;
+                }
+            });
+
+            let mut cfg_v6 = ProxyConfig::default();
+            cfg_v6.allowed_ports = vec![80, 443, v6_addr.port()];
+            cfg_v6.allow_loopback_upstream = true;
+            let (p6, rx6) = SecureLoopbackProxy::new(cfg_v6, shield.clone());
+            let p6_addr = p6.start(rx6).await.unwrap();
+
+            let mut s5_v6 = tokio::net::TcpStream::connect(p6_addr).await.unwrap();
+            s5_v6.write_all(&[0x05, 0x01, 0x00]).await.unwrap();
+            let mut g6 = [0u8; 2];
+            s5_v6.read_exact(&mut g6).await.unwrap();
+            let mut r6 = vec![0x05, 0x01, 0x00, 0x04];
+            r6.extend_from_slice(&std::net::Ipv6Addr::LOCALHOST.octets());
+            r6.extend_from_slice(&v6_addr.port().to_be_bytes());
+            s5_v6.write_all(&r6).await.unwrap();
+            let mut rep6 = [0u8; 10];
+            s5_v6.read_exact(&mut rep6).await.unwrap();
+            assert_eq!(rep6[1], 0x00);
+
+            // Simule une préface HTTP/2 dans le tunnel SOCKS5 IPv6
+            s5_v6
+                .write_all(b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+                .await
+                .unwrap();
+            let mut echo6 = [0u8; 64];
+            let en6 = s5_v6.read(&mut echo6).await.unwrap();
+            assert_eq!(&echo6[..en6], b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+            p6.shutdown();
+        }
+    }
+    println!("  [6b] SOCKS5 (ws:// echo + IPv6 ::1 + préface HTTP/2) validé.");
 
     proxy.shutdown();
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        tokio::net::TcpStream::connect(proxy_addr).await.is_err(),
+        "Après shutdown, le port proxy doit être fermé (fail-closed, zéro écoute résiduelle)"
+    );
 
     // 6. Test Anti-SSRF strict en configuration PRODUCTION par défaut (allow_loopback_upstream = false)
     {
@@ -234,15 +384,35 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
             "169.254.169.254:80",
             "127.0.0.1:80",
             "localhost:80", // Test anti-DNS-rebinding sur localhost !
+            "[::1]:443",
             "example.com:22",
         ] {
             let mut client = tokio::net::TcpStream::connect(prod_addr).await.unwrap();
             let req = format!("CONNECT {} HTTP/1.1\r\nHost: {}\r\n\r\n", target, target);
             client.write_all(req.as_bytes()).await.unwrap();
             let resp = read_http_response(&mut client).await;
-            assert!(resp.contains("403 Forbidden"), "Production proxy doit bloquer {} : {}", target, resp);
+            assert!(
+                resp.contains("403 Forbidden"),
+                "Production proxy doit bloquer {} : {}",
+                target,
+                resp
+            );
         }
+
+        // Vérification DNS inexistant (.invalid) -> 502 Bad Gateway fail-closed
+        let mut dns_fail = tokio::net::TcpStream::connect(prod_addr).await.unwrap();
+        dns_fail
+            .write_all(b"CONNECT does-not-exist.invalid:443 HTTP/1.1\r\nHost: does-not-exist.invalid:443\r\n\r\n")
+            .await
+            .unwrap();
+        let dns_resp = read_http_response(&mut dns_fail).await;
+        assert!(dns_resp.contains("502 Bad Gateway"));
+
+        // Redirection vers IP privée ou file:// rejetée
+        assert!(validate_navigation_url("http://169.254.169.254/latest/meta-data", false).is_err());
+        assert!(validate_navigation_url("file:///etc/shadow", false).is_err());
+
         prod_proxy.shutdown();
     }
-    println!("  [7] Durcissement Anti-SSRF production (RFC1918, metadata, loopback, localhost DNS, port 22) validé.");
+    println!("  [7] Durcissement Anti-SSRF production (RFC1918, metadata, IPv6 ::1, localhost DNS, DNS fail, port 22, shutdown) validé.");
 }

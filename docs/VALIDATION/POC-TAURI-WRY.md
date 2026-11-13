@@ -1,10 +1,10 @@
 # RAPPORT TECHNIQUE DE VALIDATION & PREUVE DE FAISABILITÉ (POC)
 ## Orakle Browser V2 — Évaluation du Moteur Web, Sécurité, Persistance et Filtrage
 
-> **Date** : 12 Novembre 2026  
-> **Environnement de test** : Linux 6.18 x86_64 (Kali Linux) / Rust 1.99.1 stable / Intel SSD NVMe  
-> **Code source du POC** : [`poc/poc_validation/src/main.rs`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/poc/poc_validation/src/main.rs)  
-> **Statut** : Mesures réelles reproductibles, zéro chiffre simulé  
+> **Date** : 13 Novembre 2026 (mise à jour Phase 3)  
+> **Environnement de test** : Linux 6.18 x86_64 (Kali Linux) / Rust 1.99.1 stable / `WebKit2GTK 4.1` (2.52.6) / `Chromium` (headless) / Intel SSD NVMe  
+> **Sources validées** : [`poc/poc_validation/src/main.rs`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/poc/poc_validation/src/main.rs), [`crates/orakle-core`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/crates/orakle-core/src/lib.rs), [`crates/orakle-app`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/crates/orakle-app/src/main.rs)  
+> **Statut** : Mesures réelles reproductibles, zéro chiffre inventé ou estimé sans mention explicite  
 
 ---
 
@@ -106,15 +106,17 @@ La question la plus critique pour un navigateur respectueux de la vie privée r�
 
 Pour garantir un blocage réseau sans faille sous Tauri/WRY sans dépendre des disparités des WebViews système, deux stratégies sont démontrées :
 
-1. **Proxy Loopback Haute Performance en Rust (`127.0.0.1:<port>`)** :
-   - Orakle instancie un proxy local géré par Tokio.
-   - Les WebViews sont démarrées avec l'option de proxy loopback.
-   - Au niveau du tunnel `HTTP CONNECT`, le proxy lit le domaine de destination (SNI) et consulte le moteur `adblock` en **0,304 µs**.
-   - Si le domaine est sur liste noire (DoubleClick, Criteo, Facebook Pixel), le proxy renvoie un `HTTP/1.1 403 Forbidden` immédiat.
-   - **Avantage décisif** : Aucun déchiffrement MITM requis, aucun certificat racine à installer, et blocage 100% universel sur Linux, Windows et macOS !
+1. **Niveau 1 — Proxy Loopback Haute Performance en Rust (`crates/orakle-core/src/proxy.rs`, `127.0.0.1:<port>`)** :
+   - Orakle instancie un proxy local Tokio **fail-closed** doté d'une protection SSRF & anti-DNS-rebinding (`allow_loopback_upstream = false` par défaut en production).
+   - Ordre de validation strict : IP littérale/port → Shield `adblock` (**avant résolution DNS** pour bloquer toute fuite DNS sur domaine interdit) → résolution DNS + vérification de toutes les IPs résolues avant connexion socket.
+   - Sur le moteur `adblock-rust` v0.13.5 (`thread-safe` sans `single-thread`), la consultation unitaire prend **0,824 µs** en release (`poc_validation`, 10 000 req.) et en debug (`orakle-core`, 5 000 req.) : **moyenne 63,81 µs | p50 = 52,73 µs | p95 = 139,92 µs | p99 = 220,97 µs**.
+   - Si la cible est sur liste noire, le proxy renvoie un `HTTP/1.1 403 Forbidden` immédiat (zéro déchiffrement MITM, zéro certificat racine).
+   - **Preuve E2E `WebKit2GTK 4.1` (2.52.6) via `scripts/verify-webview-proxy.py`** : HTML, multi-JS (`/app.js`, `/vendor.js`), image `/logo.svg`, tiers `OriginB /third-party.js`, blocage `403` de `/tracker-pixel.js` & `/ads/banner.js` sans atteindre `OriginB`, exception `@@/ads/sponsor-allowed.js`, `fetch('/api/data')`, redirection `302 /redirect-test`, HTTPS `https://doc.rust-lang.org/` sans MITM (`title='Rust Documentation'`), et rejet de `ws://` par `libsoup` sur proxy HTTP **sans fuite directe** (`ORIGIN_A_HITS` sans `/ws` — support `ws://` prévu via SOCKS5).
+   - **Preuve E2E `Chromium` HTTP/3 & QUIC** : `chromium --headless --proxy-server=http://127.0.0.1:<port> --log-net-log` vers `https://cloudflare-quic.com/` charge `<title>QUIC | Cloudflare</title>` via `CONNECT`, avec **`0` session QUIC (`QUIC_CONNECTION_CANCELLED`)** et **8 sessions `HTTP2_SESSION_INITIALIZED` (`h2`)** dans le tunnel `CONNECT`.
 
-2. **Injections de Scriptlets & Filtrage Déclaratif DOM** :
-   - Neutralisation des balises publicitaires dans le DOM avant exécution via `MutationObserver` et scriptlets insérés au chargement du document (`with_initialization_script`).
+2. **Niveau 2 & 3 — Adaptateurs Natifs OS, Sonde Pulse Multi-Échantillons & Scriptlets** :
+   - Pour filtrer les chemins/types de sous-ressources HTTPS, le Niveau 1 est complété par les hooks natifs OS (`WebView2 WebResourceRequested`, `WebKitGTK WebKitWebExtension::send-request`, `WKWebView WKContentRuleListStore`) documentés dans [`ADR/0001-browser-engine.md`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/docs/ADR/0001-browser-engine.md).
+   - **Sonde Pulse (`orakle-core::pulse`, 5 échantillons vers `https://doc.rust-lang.org/`)** : DNS `p50=5,66 ms (p95=278,28 ms)` | TCP `p50=114,00 ms (p95=204,27 ms)` | TLS `p50=206,30 ms (p95=289,45 ms)` | TTFB `p50=212,47 ms (p95=317,71 ms)` | Total `p50=613,22 ms (p95=902,07 ms)`.
 
 ---
 
@@ -122,29 +124,30 @@ Pour garantir un blocage réseau sans faille sous Tauri/WRY sans dépendre des d
 
 ### A. Séparation des Profils et Mode Incognito
 - **Ce qui est vérifié** :
-  - Un profil doit posséder son propre répertoire de données de navigation (base SQLite, cache, cookies).
+  - Un profil possède son propre répertoire de données et son propre stockage SQLite WAL.
   - Dans WebView2 (Windows) : `CoreWebView2Environment.CreateCoreWebView2ControllerOptionsWithProfile`.
-  - Dans WebKitGTK (Linux) : `WebKitWebsiteDataManager` instancié en mode éphémère (`webkit_website_data_manager_new_ephemeral()`).
+  - Dans WebKitGTK (Linux / `orakle-app`) : `with_incognito(true)` activant un contexte de données éphémère en mémoire vive (validé sur le volet droit Split View de `crates/orakle-app/src/main.rs`).
   - Dans WKWebView (macOS) : `WKWebsiteDataStore.nonPersistentDataStore()`.
 - **Règle absolue d'Orakle** : Un onglet privé n'est pas un simple flag d'interface ; il est rattaché à un contexte de stockage éphémère en mémoire vive qui est intégralement purgé à la fermeture.
 
-### B. Suspension d'Onglets (Tab Hibernation)
-- **Ce qui est libéré** :
-  - La destruction de la `WebView` d'arrière-plan libère immédiatement l'intégralité du processus de rendu système (`WebKitWebProcess` sous Linux, ~60 à 150 Mo de RAM par onglet lourd).
-  - L'état de l'onglet est conservé dans SQLite (URL, titre, scroll position, timestamp, ID d'espace) pour un poids mémoire de **~1,2 Ko**.
+### B. Suspension d'Onglets (Tab Hibernation) — Mesure Réelle `orakle-app --verify`
+- **Mesure empirique réelle (`/proc/*/status` `VmRSS`, 3 WebViews WebKit2GTK 2.52.6 sous `xvfb-run`)** :
+  - **État initial (3 WebViews actives : Chrome + Split View 50/50)** : `host_rss = 189 336 Kio` + `3 × WebKitWebProcess = 735 516 Kio` → **`924 852 Kio` (`903,2 Mio` total)**.
+  - **Après destruction du volet Split droit vers SQLite WAL (`2 WebViews actives`)** : `host_rss = 189 360 Kio` + `2 × WebKitWebProcess = 549 496 Kio` → **`738 856 Kio` (`721,5 Mio` total)**, soit **`186 020 Kio` (`181,7 Mio`) de RSS immédiatement libérés**.
+  - **Après restauration du volet droit depuis SQLite WAL (`3 WebViews actives`)** : `total_rss = 941 612 Kio` (`919,5 Mio`), télémetrie proxy confirmée (`total=4 allowed=3 blocked_shield=1`).
 - **Ce qui ne peut pas être restauré automatiquement** :
   - L'état DOM interne des formulaires non validés (sauf si explicitement sérialisé en JavaScript avant mise en veille).
   - Les connexions WebSockets ou WebRTC en cours (qui sont nécessairement closes).
 
 ---
 
-## 5. Synthèse Comparative Finale des Moteurs
+## 5. Synthèse Comparative Finale des Moteurs (Données Vérifiées)
 
-| Critère | Tauri v2 + WRY + Proxy Rust | Servo (2026) | CEF (Chromium Embedded) |
+| Critère | `orakle-app` (`tao` + `wry`) + `orakle-core` | Servo | CEF (Chromium Embedded) |
 |---|---|---|---|
-| **Compatibilité Web Réelle** | **96 - 98 %** | **40 - 55 %** (Non viable quotidien) | **100 %** |
-| **Poids Binaire** | **18 - 25 Mo** | ~70 Mo | 180 - 250 Mo |
-| **Interception Réseau** | Universelle via Proxy SNI Rust | Expérimentale | Native & Complète |
-| **Empreinte RAM (3 onglets)** | **~50 - 90 Mo** | ~80 Mo | ~250 - 400 Mo |
-| **Maintien Sécurité Failles 0-day** | Délégué à l'OS (WebKitGTK/WebView2) | Critique (faible équipe) | Maintenance lourde |
-| **Verdict Technique** | **APPROUVÉ POUR V2** | **EN VEILLE R&D** | **RÉSERVE ENTREPRISE** |
+| **Compatibilité Web Réelle** | **Non mesuré localement** (délégué à WebKitGTK/WebView2/WKWebView OS) | **Non mesuré localement** (absence DRM Widevine, WebRTC partiel) | **Non mesuré localement** (pile Blink complète) |
+| **Poids Binaire Mesuré** | **Mesuré : 8,8 Mio brut / 6,9 Mio strippé** (`--release` Linux x86_64, hors WebKitGTK OS) | **Non mesuré localement** | **Non mesuré localement** |
+| **Interception Réseau** | **3 Niveaux** : Proxy Rust (validé WebKit2GTK & Chromium) + Adaptateurs OS Niveau 2 | Expérimentale (non auditée localement) | Native & Unifiée (`CefResourceRequestHandler`) |
+| **Empreinte RAM (3 WebViews)** | **Mesuré (`orakle-app --verify`) : 903,2 Mio `VmRSS` total** (**721,5 Mio** après suspension d'1 volet) | **Non mesuré localement** | **Non mesuré localement** |
+| **Maintien Sécurité Failles 0-day** | Délégué à l'OS (WebKitGTK/WebView2/WKWebView) | Maintenance amont limitée | Maintenance lourde |
+| **Verdict Technique** | **VALIDÉ PHASE 3 (`orakle-core` + `orakle-app`)** | **EN VEILLE R&D** | **RÉSERVE ENTREPRISE** |

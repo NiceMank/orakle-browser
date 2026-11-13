@@ -1,8 +1,8 @@
 # Orakle Browser — Stratégie de Test et Critères d'Acceptation
 
 - **Version** : 2.0.0
-- **Statut** : Document de test et assurance qualité
-- **Dernière mise à jour** : 2026-11-11
+- **Statut** : Document de test et assurance qualité (aligné Phase 3)
+- **Dernière mise à jour** : 2026-11-13
 
 ---
 
@@ -22,10 +22,11 @@
 | Niveau de Test | Cible | Outils & Commandes | Critères de Réussite |
 |---|---|---|---|
 | **Analyse Statique & Linting** | Cœur Rust & Interface | • `cargo clippy --all-targets -- -D warnings`<br>• `cargo fmt --check`<br>• `npm run typecheck` | Zéro avertissement, formatage conforme. |
-| **Tests Unitaires Rust** | Modules `storage`, `shield`, `network`, `tabs` | • `cargo test --workspace` | 100% de réussite sur les cas nominaux et d'erreur. |
-| **Sécurité des Dépendances** | Vulnérabilités connues (CVE) | • `cargo audit`<br>• `npm audit` | Zéro faille critique ou haute non mitigée. |
-| **Tests d'Intégration UI** | Composants React & Navigation | • Vitest / React Testing Library | Vérification des interactions clavier et états accessibles. |
-| **Mesures de Performance Réelles** | Processus en exécution | • Mesure de la mémoire via `/proc/$PID/status` (VmRSS)<br>• Outil de profilage natif | • Démarrage à froid < 400 ms.<br>• Mémoire au repos (1 onglet) < 80 Mo. |
+| **Tests Unitaires & E2E Rust** | Modules `storage`, `shield`, `pulse`, `proxy` + `tests/proxy_server_e2e.rs` | • `cargo test -p orakle-core` | 100% de réussite (9 unitaires + E2E multi-ressources, anti-SSRF, WebSocket, 302, fail-closed). |
+| **Harnais WebView & HTTP/3** | Routage réel `WebKit2GTK 4.1` & `Chromium` NetLog | • `xvfb-run -a python3 scripts/verify-webview-proxy.py`<br>• `chromium --headless --proxy-server=http://... --log-net-log` | HTML/JS/SVG/Fetch/302/HTTPS routés, blocages & exceptions `@@` effectifs, 0 session QUIC (`h2` dans `CONNECT`). |
+| **Tests & Mesures `orakle-app`** | Hôte `tao` + `wry` multi-WebViews, Split View, Tab Discarding | • `xvfb-run -a ./target/release/orakle-app --verify`<br>• Mesure `/proc/*/status` (`VmRSS`) | 3 WebViews actives (`903,2 Mio`), libération vérifiée lors de la suspension (`-181,7 Mio`), restauration complète. |
+| **Non-régression V1.1** | Interface Electron héritée (`v1.1-aurora-final`) | • `npm run typecheck`<br>• `npm run build:electron` | Compilation sans erreur préservée. |
+| **Sécurité des Dépendances** | Vulnérabilités connues (CVE) | • `cargo audit`<br>• `npm audit` | Zéro faille critique ou haute non mitigée (cible CI). |
 
 ---
 

@@ -1,0 +1,7 @@
+[workspace]
+members = [
+    "crates/orakle-core",
+    "crates/orakle-app",
+    "poc/poc_validation",
+]
+resolver = "2"

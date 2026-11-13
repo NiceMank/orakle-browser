@@ -1,8 +1,8 @@
 # Orakle Browser — Feuille de Route de Développement (Roadmap)
 
 - **Version** : 2.0.0
-- **Statut** : Plan directeur des versions
-- **Dernière mise à jour** : 2026-11-11
+- **Statut** : Plan directeur des versions (mise à jour Phase 3)
+- **Dernière mise à jour** : 2026-11-13
 
 ---
 
@@ -45,20 +45,17 @@ flowchart LR
   - Page d'accueil sobre avec horloge élégante et accès rapides.
   - Paramètres structurés par catégories avec interrupteurs fonctionnels.
 
-### Phase 3 : Première Version Fonctionnelle (Cœur Rust & Navigation Réelle)
-- [ ] Initialisation du projet Rust sous `crates/orakle-core` et `crates/orakle-app`.
-- [ ] Intégration de Tauri v2 + WRY pour l'affichage de véritables pages Web.
-- [ ] Cycle de vie complet des onglets : ouverture, fermeture, réorganisation, navigation (Précédent, Suivant, Actualiser, Arrêt).
-- [ ] Persistance atomique des favoris et de l'historique dans une base SQLite locale.
-- [ ] Prise en charge des thèmes Sombre / Clair / Système avec bascule persistante.
+### Phase 3 : Implémentation du Cœur Rust & Validation Moteur Réelle (Validée sur socle `orakle-core` + `orakle-app`)
+- [x] Workspace Rust fonctionnel sous [`crates/orakle-core`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/crates/orakle-core/Cargo.toml) (`storage`, `shield` `Send+Sync`, `pulse` multi-échantillons, `proxy` fail-closed anti-DNS-rebinding) et [`crates/orakle-app`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/crates/orakle-app/Cargo.toml) (`tao 0.37` + `wry 0.57`).
+- [x] Preuves empiriques du Proxy Loopback Rust : suite E2E `proxy_server_e2e.rs`, harnais réel `WebKit2GTK 4.1` (`scripts/verify-webview-proxy.py`) et vérification NetLog Chromium (`0` session QUIC / bascule `h2`).
+- [x] Validation multi-WebViews (Chrome UI + Split View 50/50 sous `gtk::Fixed`, volet incognito, redimensionnement dynamique, Tab Discarding SQLite WAL mesuré à `-181,7 Mio VmRSS`).
+- [ ] Compléter le cycle de vie interactif complet des onglets, l'historique navigation/favoris UI et le sélecteur de thèmes persistant dans `chrome.html`.
 
-### Phase 4 : Fonctions Avancées & Confidentialité Active
-- [ ] Intégration du moteur `adblock-rs` avec règles EasyList compilées en mémoire.
-- [ ] Nettoyage automatique des paramètres de pistage d'URL (`utm_*`, `fbclid`, etc.).
-- [ ] Mode Fantôme (Navigation Privée en RAM sans écriture disque).
-- [ ] Mode Lecture (Orakle Reader) avec extraction locale Readability.
-- [ ] Gestionnaire des cookies et de purge sanitaire sélective.
-- [ ] Sonde de latence réseau Pulse (DNS, TLS, TTFB réels).
+### Phase 4 : Fonctions Avancées & Filtrage Niveau 2/3
+- [ ] Ajouter le support **SOCKS5** au proxy loopback (nécessaire pour `ws://` sous WebKitGTK).
+- [ ] Implémenter les adaptateurs natifs OS Niveau 2 (`WebView2 WebResourceRequested`, `WebKitWebExtension`, `WKContentRuleListStore`) et la prise en charge ciblée Niveau 3 (cosmétique / scriptlets / `$removeparam`).
+- [ ] Mode Lecture (Orakle Reader), gestionnaire des cookies/purge sélective et intégration des coffres-forts secrets OS.
+- [ ] Exposer la sonde Pulse multi-échantillons et la télémétrie `ProxyTelemetry` dans le panneau latéral Chrome.
 
 ### Phase 5 : Stabilisation, Tests et Distribution
 - [ ] Packaging Linux natif : `.deb` (Debian/Ubuntu/Kali), AppImage et tarball binaire.

@@ -1,8 +1,8 @@
 # Orakle Browser — Spécification d'Architecture Technique
 
 - **Version** : 2.0.0
-- **Statut** : Document d'architecture de référence
-- **Dernière mise à jour** : 2026-11-11
+- **Statut** : Document d'architecture de référence (aligné Phase 3)
+- **Dernière mise à jour** : 2026-11-13
 
 ---
 
@@ -34,19 +34,19 @@ flowchart TD
         IPC["Protocole Typé Asynchrone (Serde JSON / Binaire)"]
     end
 
-    subgraph Rust_Core ["Cœur Système Natif (Rust Core)"]
-        WindowManager["Window & Layout Manager (Tao / Wry)"]
-        TabEngine["Tab & Session Orchestrator"]
-        ShieldEngine["Orakle Shield (adblock-rs + Flatbuffers)"]
-        NetworkProbe["Network Pulse Engine (reqwest + rustls)"]
-        StorageEngine["Encrypted Local DB (rusqlite / SQLite)"]
-        SecurityController["Permissions & Sandboxing Controller"]
+    subgraph Rust_Core ["Cœur Système Natif (crates/orakle-core & orakle-app)"]
+        WindowManager["Window & Layout Manager (tao 0.37 + wry 0.57 / gtk::Fixed Linux)"]
+        TabEngine["Tab Discarding & Split View State (SQLite WAL)"]
+        ShieldEngine["Orakle Shield (adblock 0.13.5 + Flatbuffers, Send+Sync)"]
+        ProxyEngine["Loopback Proxy (127.0.0.1 HTTP/CONNECT, fail-closed, anti-SSRF)"]
+        NetworkProbe["Network Pulse Engine (tokio::net + tokio-rustls ring)"]
+        StorageEngine["Local DB (rusqlite 0.33 / SQLite WAL)"]
     end
 
     subgraph Web_Engines ["Moteurs de Rendu Web Isolés"]
         ActiveView["Active Primary WebView"]
-        SplitView["Active Secondary Split WebView"]
-        SuspendedCache["Suspended Tabs State Cache (In-Memory)"]
+        SplitView["Active Secondary Split WebView (Incognito possible)"]
+        SuspendedCache["Suspended Tabs State (SQLite WAL)"]
     end
 
     UI_Shell <-->|"Commandes & Événements IPC"| IPC_Bridge
@@ -54,10 +54,12 @@ flowchart TD
     Rust_Core --> WindowManager
     WindowManager --> ActiveView
     WindowManager --> SplitView
+    ActiveView -->|"ProxyConfig::Http"| ProxyEngine
+    SplitView -->|"ProxyConfig::Http"| ProxyEngine
     TabEngine --> SuspendedCache
-    ShieldEngine -->|"Règles réseau & Interception"| Rust_Core
-    NetworkProbe -->|"Télémétrie DNS / TLS réelle"| Rust_Core
-    StorageEngine -->|"Persistance chiffrée"| Rust_Core
+    ShieldEngine -->|"Règles réseau Niveau 1–3"| ProxyEngine
+    NetworkProbe -->|"Télémétrie DNS / TCP / TLS / TTFB"| Rust_Core
+    StorageEngine -->|"Persistance ACID"| Rust_Core
 ```
 
 ---
@@ -65,33 +67,29 @@ flowchart TD
 ## 3. Description Détaillée des Modules Rust
 
 ### A. Module `orakle-core::storage` (Persistance Locale)
-- **Technologie** : SQLite via `rusqlite` avec transactions atomiques (`ACID`).
+- **Technologie** : SQLite WAL via `rusqlite` 0.33 avec transactions atomiques (`ACID`) et intégrité référentielle (`PRAGMA foreign_keys = ON`).
 - **Responsabilités** :
-  - `bookmarks` : table des favoris avec hiérarchie de dossiers, tags, dates de création et favicons stockés en blob.
-  - `history` : table d'historique avec indexation des URLs et des titres, sans écriture des pages consultées en mode Fantôme.
-  - `sessions` : stockage des clichés d'onglets nommés et sérialisés.
-  - `settings` : paires clé-valeur typées pour les préférences utilisateur (thème, densité, moteur par défaut).
-- **Sécurité** : Chiffrement local au repos des données sensibles (clés, mots de passe enregistrés) via les mécanismes de coffre-fort du système d'exploitation (`Secret Service` sur Linux, `DPAPI` sur Windows, `Keychain` sur macOS).
+  - Tables `tabs` / `spaces`, `bookmarks`, `history` et `settings` pour la persistance et la suspension des onglets (mesuré à **3,91 µs/entrée** en release dans `poc_validation` et **19,04 µs/entrée** en debug sur 1 000 insertions).
+- **Sécurité des secrets (cible Phase 4)** : Délégation vers les coffres-forts OS (`Secret Service` Linux, `DPAPI` Windows, `Keychain` macOS) prévue pour l'étape d'enregistrement d'identifiants.
 
-### B. Module `orakle-core::shield` (Bouclier de Confidentialité)
-- **Technologie** : Crate Rust `adblock` (moteur officiel compilé en bytecode natif avec filtres de Bloom).
+### B. Modules `orakle-core::shield` & `orakle-core::proxy` (Bouclier & Proxy Loopback)
+- **Technologie** : Crate Rust `adblock` 0.13.5 (`Send + Sync`, features `embedded-domain-resolver` et `full-regex-handling`, sans `single-thread`) couplée au proxy loopback `tokio::net::TcpListener`.
 - **Responsabilités** :
-  - Compilation des listes de filtrage (EasyList, Peter Lowe, règles de pistage) en mémoire vive.
-  - Évaluation de chaque URL avant requête en moins de **0.2 milliseconde**.
-  - Purge des balises de tracking dans les URLs (`utm_*`, `fbclid`, `gclid`, `msclkid`, `twclid`, `_ga`).
-  - Injection automatique des en-têtes de refus de pistage `DNT: 1` et `Sec-GPC: 1`.
+  - Filtrage à 3 niveaux (Niveau 1 : Proxy `CONNECT`/HTTP par domaine/URL HTTP ; Niveau 2 : Adaptateurs natifs OS prévus pour sous-ressources HTTPS ; Niveau 3 : Scriptlets/cosmétique sous matrice de compatibilité).
+  - Évaluation mesurée de `adblock` : **0,824 µs/requête** en release (`poc_validation`, 10k req.) ; `p50=52,73 µs`, `p95=139,92 µs` en debug (`orakle-core`, 5k req.).
+  - Vérification du bouclier **avant résolution DNS** dans `proxy.rs` (zéro fuite DNS vers les domaines bloqués) + validation anti-SSRF / anti-DNS-rebinding (`allow_loopback_upstream = false` par défaut).
+  - Télémétrie exacte via `ProxyTelemetry` (`allowed`, `blocked_shield`, `blocked_ssrf`, `errors`, `bytes_proxied`).
 
-### C. Module `orakle-core::network` (Diagnostic Pulse)
-- **Technologie** : Client HTTP/2 et TLS 1.3 basé sur `reqwest` et `rustls` (zéro dépendance OpenSSL vulnérable).
+### C. Module `orakle-core::pulse` (Diagnostic Pulse)
+- **Technologie** : Client `tokio::net::TcpStream` + `tokio-rustls` (`ring`), zéro dépendance OpenSSL.
 - **Responsabilités** :
-  - Mesure réelle des phases de connexion : temps de résolution DNS (socket UDP non-bloquant), handshake TCP, négociation TLS, et *Time-to-First-Byte* (TTFB).
-  - Audit passif des en-têtes HTTP de sécurité (`Strict-Transport-Security`, `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`).
+  - Mesure réelle par phase (`dns_ms`, `tcp_ms`, `tls_ms`, `ttfb_ms`, `total_ms`) avec timeout configurable (`5 s` par défaut) et agrégation statistique multi-échantillons (`probe_stats` → `p50` / `p95`, sans ratios fixes).
 
-### D. Module `orakle-core::tab_manager` (Cycle de Vie des Onglets)
+### D. Hôte Natif `orakle-app` (`tao 0.37` + `wry 0.57`)
 - **Responsabilités** :
-  - Gestion des listes d'onglets ordonnées par espace de travail (*Space*).
-  - Politique de gestion de mémoire : maintien d'au maximum deux WebViews actives en rendu simultané (l'onglet principal et l'onglet scindé en mode Split View).
-  - Les onglets d'arrière-plan sont mis en état de veille (*suspended*) après un délai configurable d'inactivité, libérant leur thread de rendu tout en préservant leur position dans l'historique et leur URL.
+  - Fenêtre native multi-WebViews (Chrome UI + Split View 50/50 avec volet droit incognito via `with_incognito(true)`), routage forcé sur `SecureLoopbackProxy` (`ProxyConfig::Http`).
+  - Sous Linux X11/Wayland : montage via `gtk::Fixed` + `WebViewBuilderExtUnix::build_gtk` et redimensionnement dynamique `set_bounds`.
+  - Suspension réelle des volets/onglets (destruction de l'instance `WebView` et libération du `WebKitWebProcess` associé : **-181,7 Mio `VmRSS`** mesuré dans `orakle-app --verify`) avec sauvegarde/restauration d'état depuis `Storage`.
 
 ---
 

@@ -139,9 +139,11 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
     let shield = Arc::new(ShieldEngine::new_with_rules(TEST_RULES));
 
     // Config de test autorisant uniquement le port du mock pour valider le routage HTTP réel
-    let mut test_config = ProxyConfig::default();
-    test_config.allowed_ports = vec![80, 443, 8080, mock_addr.port()];
-    test_config.allow_loopback_upstream = true;
+    let test_config = ProxyConfig {
+        allowed_ports: vec![80, 443, 8080, mock_addr.port()],
+        allow_loopback_upstream: true,
+        ..Default::default()
+    };
 
     let (proxy, shutdown_rx) = SecureLoopbackProxy::new(test_config, shield.clone());
     let proxy_addr = proxy.start(shutdown_rx).await.expect("Démarrage du proxy");
@@ -251,9 +253,11 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
         let dead_port = dead_listener.local_addr().unwrap().port();
         drop(dead_listener);
 
-        let mut cfg_dead = ProxyConfig::default();
-        cfg_dead.allowed_ports = vec![dead_port];
-        cfg_dead.allow_loopback_upstream = true;
+        let cfg_dead = ProxyConfig {
+            allowed_ports: vec![dead_port],
+            allow_loopback_upstream: true,
+            ..Default::default()
+        };
         let (dead_proxy, dead_rx) = SecureLoopbackProxy::new(cfg_dead, shield.clone());
         let dead_proxy_addr = dead_proxy.start(dead_rx).await.unwrap();
 
@@ -335,9 +339,11 @@ async fn test_proxy_e2e_routing_blocking_exceptions_and_fail_closed() {
                 }
             });
 
-            let mut cfg_v6 = ProxyConfig::default();
-            cfg_v6.allowed_ports = vec![80, 443, v6_addr.port()];
-            cfg_v6.allow_loopback_upstream = true;
+            let cfg_v6 = ProxyConfig {
+                allowed_ports: vec![80, 443, v6_addr.port()],
+                allow_loopback_upstream: true,
+                ..Default::default()
+            };
             let (p6, rx6) = SecureLoopbackProxy::new(cfg_v6, shield.clone());
             let p6_addr = p6.start(rx6).await.unwrap();
 

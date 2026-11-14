@@ -42,6 +42,13 @@
    - **macOS** : `Apple Keychain`.
    Aucun mot de passe ou jeton sensible n'est enregistré en texte clair dans un fichier de configuration JSON.
 
+3. **Traces Hors Périmètre du Navigateur (Mode Privé)** :
+   Même lorsque `PrivateSession` purge le répertoire temporaire de session à la fermeture et n'écrit ni historique ni cookies persistants sur disque, des traces restent par nature hors de contrôle du navigateur :
+   - **Cache DNS du système / résolveur** (`systemd-resolved`, cache DNS OS ou box/FAI).
+   - **Trafic réseau & métadonnées TLS** : adresse IP source, résolutions IP, noms de domaine via SNI/ESNI et volumes échangés visibles par le routeur local, le FAI, l'employeur ou les serveurs visités.
+   - **Mémoire virtuelle & Swap OS** : pages RAM paginées sur swap ou hibernation tant qu'un chiffrement complet du disque/swap n'est pas actif sur le poste hôte.
+   - **Fichiers volontairement enregistrés** : téléchargements et signets créés explicitement par l'utilisateur.
+
 ---
 
 ## 4. Politique de Divulgation des Vulnérabilités & Mises à Jour

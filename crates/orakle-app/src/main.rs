@@ -2,10 +2,12 @@ mod bench;
 mod metrics;
 mod pages;
 
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -404,8 +406,6 @@ fn origin_key_from_url(raw: &str) -> Option<String> {
 
 struct BrowserHost {
     rt: Arc<tokio::runtime::Runtime>,
-    #[allow(dead_code)]
-    base_data_dir: PathBuf,
     registry: ProfileRegistry,
     profile: ProfileContext,
     private_session: Option<PrivateSession>,
@@ -449,7 +449,7 @@ struct BrowserHost {
     live_downloads: HashMap<String, LiveDownloadMeta>,
     resumable_controls: HashMap<String, Arc<DownloadControl>>,
     #[cfg(target_os = "linux")]
-    webkit_downloads: Arc<Mutex<HashMap<String, webkit2gtk::Download>>>,
+    webkit_downloads: Rc<RefCell<HashMap<String, webkit2gtk::Download>>>,
     download_ctx_hooked: HashSet<usize>,
     authorized_localhost_origins: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     win_w: i32,
@@ -761,7 +761,7 @@ impl BrowserHost {
                 if lower.contains("cancelled") || lower.contains("frame load interrupted") {
                     return false;
                 }
-                let kind = classify_webkit_error(&msg, proxy_fail_check.load(Ordering::SeqCst));
+                let kind = classify_webkit_error(msg, proxy_fail_check.load(Ordering::SeqCst));
                 let html = render_error_page_html(kind, failing_uri);
                 let view_clone = view.clone();
                 gtk::glib::idle_add_local_once(move || {
@@ -818,19 +818,14 @@ impl BrowserHost {
                             .map(|g| g.to_string())
                             .unwrap_or_default();
                         let dl_id = format!("wk-{}", url);
-                        if let Ok(mut map) = wk_map.lock() {
-                            map.insert(dl_id.clone(), dl.clone());
-                        }
+                        wk_map.borrow_mut().insert(dl_id.clone(), dl.clone());
                         let last_state = Arc::new(Mutex::new((0u64, Instant::now())));
                         let ev_rx = ev_dl_prog.clone();
                         let dl_id_rx = dl_id.clone();
                         let url_rx = url.clone();
                         dl.connect_received_data(move |d, _delta| {
                             let rx_bytes = d.received_data_length();
-                            let total = d
-                                .response()
-                                .map(|r| r.content_length().max(0) as u64)
-                                .unwrap_or(0);
+                            let total = d.response().map(|r| r.content_length()).unwrap_or(0);
                             let mut speed = 0u64;
                             if let Ok(mut st) = last_state.lock() {
                                 let dt = st.1.elapsed().as_secs_f64();
@@ -876,10 +871,7 @@ impl BrowserHost {
                                 filename: fname,
                                 save_path: dest,
                                 received_bytes: d.received_data_length(),
-                                total_bytes: d
-                                    .response()
-                                    .map(|r| r.content_length().max(0) as u64)
-                                    .unwrap_or(0),
+                                total_bytes: d.response().map(|r| r.content_length()).unwrap_or(0),
                                 speed_bps: 0,
                                 status: "Échec".into(),
                                 error_message: Some(
@@ -1774,10 +1766,8 @@ impl BrowserHost {
                         ctrl.cancel();
                     }
                     #[cfg(target_os = "linux")]
-                    if let Ok(map) = self.webkit_downloads.lock() {
-                        if let Some(wk_dl) = map.get(id) {
-                            wk_dl.cancel();
-                        }
+                    if let Some(wk_dl) = self.webkit_downloads.borrow().get(id) {
+                        wk_dl.cancel();
                     }
                     if let Ok(list) = self.profile.storage.get_downloads() {
                         if let Some(mut rec) = list.into_iter().find(|d| d.id == id) {
@@ -2268,7 +2258,6 @@ fn main() {
     let demo_base_url = demo_addr_opt.map(|d| format!("http://{}", d));
     let mut host = BrowserHost {
         rt,
-        base_data_dir,
         registry,
         profile,
         private_session: None,
@@ -2312,7 +2301,7 @@ fn main() {
         live_downloads: HashMap::new(),
         resumable_controls: HashMap::new(),
         #[cfg(target_os = "linux")]
-        webkit_downloads: Arc::new(Mutex::new(HashMap::new())),
+        webkit_downloads: Rc::new(RefCell::new(HashMap::new())),
         download_ctx_hooked: HashSet::new(),
         authorized_localhost_origins: Arc::new(Mutex::new(HashMap::new())),
         win_w: 1360,

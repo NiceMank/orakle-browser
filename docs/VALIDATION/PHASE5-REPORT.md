@@ -21,7 +21,7 @@
    - Validation anti-SSRF / anti-DNS-rebinding (`is_forbidden_private_ip`, CRLF/injection d'URL), blocage de redirections HTTP `3xx Location:` vers `127.0.0.1`/réseaux privés, blocage anti-CSRF `Origin`/`Referer` vers loopback, tunnel WebSocket via `CONNECT` + comportement fail-closed après arrêt du proxy.
 
 3. **Packaging & Préparation Distribution (`packaging/`)** :
-   - **Linux `.deb` compilé et vérifié localement** (`packaging/linux/build-deb.sh`) : produit `packaging/dist/orakle-browser_0.2.0_amd64.deb` (`3 865 592` octets, `Installed-Size: 16695` KiB, SHA-256 `c519c12c53b77574b6dba895945c8d81c3402ecd56b5c920a934889bbb7e9d53` vérifié via `dpkg-deb --info`, `dpkg-deb --contents` et `sha256sum -c`). Contient `/usr/bin/orakle-app`, `/usr/bin/orakle-browser` (wrapper `ORAKLE_WEBKIT_EXTENSION_DIR`), `/usr/lib/orakle-browser/extensions/liborakle_webkit_ext.so`, `.desktop` et icône SVG [`orakle-browser.svg`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/packaging/orakle-browser.svg).
+   - **Linux `.deb` compilé et vérifié localement** (`packaging/linux/build-deb.sh`) : produit `packaging/dist/orakle-browser_0.2.0_amd64.deb` (`3 861 664` octets, `Installed-Size: 16695` KiB, SHA-256 `05c34ccba293a31d0d37561b3edf019a95283b1d13ab148393c9ef22be69e4a8` vérifié via `dpkg-deb --info`, `dpkg-deb --contents` et `sha256sum -c`). Contient `/usr/bin/orakle-app`, `/usr/bin/orakle-browser` (wrapper `ORAKLE_WEBKIT_EXTENSION_DIR`), `/usr/lib/orakle-browser/extensions/liborakle_webkit_ext.so`, `.desktop` et icône SVG [`orakle-browser.svg`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/packaging/orakle-browser.svg).
    - **AppImage (`packaging/linux/build-appimage.sh`)** : `AppDir` assemblé avec succès dans `packaging/dist/Orakle-Browser.AppDir`, génération `.AppImage` finale **non exécutée** (`appimagetool` absent sur la machine hôte).
    - **Windows (`packaging/windows/orakle.wxs`) & macOS (`packaging/macos/package-macos.sh`)** : manifestes et scripts préparés comme **modèles non compilés ni testés** sur Windows/macOS dans cette session Linux.
    - **Signature & Mises à jour (`packaging/SIGNING-AND-UPDATES.md`, `packaging/update-manifest.example.json`)** : procédure et modèle documentés sans aucune clé ni signature simulée.
@@ -33,7 +33,8 @@
 | Vérification | Commande | Résultat observé |
 |---|---|---|
 | Formatage Rust | `cargo fmt --check` | **Succès** (`exit 0`, aucune divergence) |
-| Analyse statique Rust | `cargo clippy --workspace --all-targets` | **Succès** (`exit 0`, 0 erreur ; avertissements résiduels non bloquants dans `orakle-app`, `webview_proxy_harness` et tests) |
+| Vérification workspace | `cargo check --workspace` | **Succès** (`exit 0`, 0 erreur) |
+| Analyse statique Rust | `cargo clippy --workspace --all-targets` | **Succès** (`exit 0`, **0 erreur, 0 avertissement** sur tout le workspace après suppression de `base_data_dir`, passage `webkit_downloads` en `Rc<RefCell<_>>` et nettoyage tests/exemples) |
 | Suite de tests Rust | `cargo test --workspace` | **29 passed, 0 failed** (`17` unitaires `orakle_core` + `6` `phase4_security_and_lifecycle` + `5` `phase5_security_and_profiles` + `1` `proxy_server_e2e`) |
 | Compilation Release | `cargo build --release --workspace` | **Succès** (`Finished release profile [optimized] in 3m 05s`) |
 | Non-régression V1.1 (`v1.1-aurora-final`) | `npm run typecheck && npm run build` | **Succès** (`tsc --noEmit`, `tsc -p tsconfig.electron.json --noEmit`, Vite `dist/assets/index-DLSskh2O.js` en `35.37s`) ; lancement Xvfb `--no-sandbox --disable-gpu` arrêté au timeout (`exit=124`, `GPU process isn't usable` sous Xvfb sans GPU) |
@@ -78,9 +79,35 @@ Exécuté dans un cgroup v2 isolé via `systemd-run --user --scope -p MemoryAcco
 
 Ventilation cgroup observée sur le dernier échantillon de `split_view_2_panneaux` (`memory.stat`) : `anon = 177 604 KiB`, `file = 8 100 KiB`, `shmem = 8 044 KiB`, `kernel = 19 316 KiB` (`memory.current = 206 684 KiB`).
 
+### Périmètres de Comptabilisation & Séparation des Phases
+
+- **RSS (`VmRSS`) vs PSS (`smaps_rollup`) vs `cgroup memory.current`** :
+  - **RSS** additionne toutes les pages résidentes de chaque processus (`orakle-app`, `WebKitWebProcess`, `WebKitNetworkProcess`, `WebKitGPUProcess`), ce qui **compte plusieurs fois les bibliothèques partagées** (`libwebkit2gtk`, GTK, Mesa/LLVM).
+  - **PSS** divise chaque page partagée par le nombre de processus qui la mappent, offrant une estimation réaliste de la RAM physique attribuable à l'arbre applicatif.
+  - **`cgroup v2` (`memory.current` / `memory.stat`)** comptabilise la mémoire réellement imputée au scope isolé `systemd-run` par le noyau (`anon` privé + caches fichier/shmem attribués + mémoire noyau `slab`/`page tables`, sans double comptage des bibliothèques déjà chargées hors scope). C'est pourquoi `cgroup p50` (`99,7–166,8 MiB`) est inférieur au PSS (`140,7–220,2 MiB`) et très inférieur au RSS brut (`273,5–570,1 MiB`).
+- **Séparation des phases dans le harnais (`bench.rs`)** :
+  - **Démarrage** (`startup_window_ms = 271,48 ms`) → **Première WebView** (`cold_first_webview_ms = 603,80 ms`) → **Warmup** (`1` itération complète écartée des statistiques) → **30 passes mesurées** isolant *Navigation / Chargement* (`1_webview_vide`, `3_webviews_vides`, `3_pages_simples`, `3_pages_complexes`, `10_onglets_ouverts`), *Split View* (`split_view_2_panneaux`), *Suspension* (`apres_suspension_split` + `terminate_web_process()`) et *Restauration* (`apres_restauration_split`), suivies d'une purge complète des vues entre chaque passe.
+
 ---
 
-## 5. Limites Restantes Documentées Honnêtement
+## 5. Matrice Fonctionnelle Complète (Phase 5)
+
+| Fonctionnalité | État | Plateformes | Tests | Limites | Prochaine action |
+|---|---|---|---|---|---|
+| **Cœur Chrome + Omnibox multi-sources + Bangs** | Opérationnel | Linux (X11/Wayland) ; base WebView2/WKWebView dans `wry` | `--verify-phase5`, `p5-02-omnibox-dropdown.png` | Windows/macOS non compilés localement | Tester hôtes Windows/macOS |
+| **Multi-Onglets, Espaces, Sessions, Suspension WAL** | Opérationnel | Linux (X11/Wayland) | `cargo test --workspace`, `--bench` 30 passes, `--verify-phase5` | Pas de synchro cloud | Déployer CI multi-OS |
+| **Split View 30/70, 50/50, 70/30 + Swap + Sync Scroll** | Opérationnel | Linux (X11/Wayland, `GDK_SCALE=2`) | `--verify`, `--verify-phase5`, `p5-03-split-shield.png` | Windows/macOS non exécutés | Valider dpi Windows/macOS |
+| **Orakle Shield N1 (Proxy) + N2 (`liborakle_webkit_ext.so`) + Journal borné** | Opérationnel | Linux (N1+N2) ; N1 Rust portable Windows/macOS | `proxy_server_e2e`, `phase4_*`, `phase5_*`, journal `MAX_SHIELD_LOGS=200` + `sanitize_url_for_log` | HTTP/3 QUIC absent côté WebKitGTK / N2 WebView2 & N2 macOS non exécutés sur hôtes natifs | Tests sur Windows WebView2 & macOS WKWebView |
+| **Politique Fail-Closed & Pages d'erreur WebView** | Opérationnel | Linux (`pages.rs` + `proxy_running_flag`) | `test_proxy_shutdown_is_strict_fail_closed`, `p5-06`, `p5-07` | Erreurs spécifiques HTTP/3 non applicables | Ajouter métriques de reconnexion |
+| **Anti-SSRF / DNS Rebinding / Redirections 3xx / CSRF Loopback** | Opérationnel | Cœur Rust multiplateforme | `phase5_security_and_profiles.rs` (5 tests) + `proxy_server_e2e` | Autorisation dev `localhost` par origine en mémoire vive | Persistance sélective dev ports si souhaitée |
+| **Profils isolés & Session Privée éphémère** | Opérationnel | Cœur Rust multiplateforme + Linux UI | `phase4_*`, `phase5_security_and_profiles.rs`, `p5-06-proxy-outage-profiles.png` | Traces système/réseau hors navigateur (DNS OS, FAI, swap — voir [`SECURITY_MODEL.md`](file:///run/media/niceman/Nice/ProjetsWeb/Orakle-Browser/docs/SECURITY_MODEL.md)) | Intégrer coffres-forts OS (`libsecret`/`DPAPI`/`Keychain`) |
+| **Téléchargements résumables (`206`/`Range`) & Classification** | Opérationnel | Linux (`downloads.rs` + WebKitGTK `Download`) | `test_phase5_download_sanitization_classification_and_range_resume`, `p5-05` | Pas de moteur antivirus intégré (avertissement explicite UI) | Intégrer option hash/scan externe CI |
+| **Thèmes (Sombre/Clair/Système), Accent, Densité** | Opérationnel | Linux (X11/Wayland) | `--verify-phase5`, `p5-01` & `p5-04-light-history.png` | — | Audit clavier/lecteur d'écran étendu |
+| **Packaging & Distribution** | Partiel (Linux `.deb` validé) | Linux `.deb` validé ; AppDir prêt ; WiX/macOS modèles | `build-deb.sh` + `dpkg-deb` + `sha256sum -c` | `appimagetool` absent ; Windows `.wxs`/macOS `.sh` non compilés ; pas de signature GPG/Authenticode locale | Pipeline CI release signé multi-OS |
+
+---
+
+## 6. Limites Restantes Documentées Honnêtement
 
 - **Coffres-forts OS (`libsecret` / `DPAPI` / `Keychain`)** : non intégrés pour les mots de passe à ce stade (aucun stockage de secret en clair dans SQLite).
 - **Cibles Windows & macOS** : non compilées ni exécutées dans cet environnement Linux (scripts/WiX fournis comme bases de travail).

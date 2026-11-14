@@ -46,8 +46,9 @@ use orakle_core::{
     DL_STATE_ERROR, DL_STATE_PAUSED,
 };
 use pages::{
-    build_omnibox_suggestions, classify_webkit_error, render_error_page_html,
-    render_start_page_html, resolve_omnibox_input, ErrorPageKind,
+    build_omnibox_suggestions, classify_webkit_error, normalize_search_engine,
+    render_error_page_html, render_start_page_html, resolve_omnibox_input, search_engine_label,
+    ErrorPageKind,
 };
 
 const CHROME_HTML: &str = include_str!("chrome.html");
@@ -125,6 +126,8 @@ enum UserEvent {
     },
     VerifyStep(u8),
     VerifyPhase5Step(u8),
+    VerifyUxStep(u8),
+    HostResized(i32, i32),
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -194,6 +197,9 @@ struct ChromeStateSnapshot {
     downloads_count: usize,
     profile_name: String,
     toast: Option<String>,
+    search_engine: String,
+    needs_search_onboarding: bool,
+    tips_on_startup: bool,
 }
 
 struct TabItem {
@@ -392,6 +398,14 @@ fn resolve_effective_theme(pref: &str) -> String {
     "dark".to_string()
 }
 
+fn pick_adjacent_tab_id(remaining_space_ids: &[String], removed_pos: usize) -> Option<String> {
+    if remaining_space_ids.is_empty() {
+        return None;
+    }
+    let idx = removed_pos.min(remaining_space_ids.len() - 1);
+    Some(remaining_space_ids[idx].clone())
+}
+
 fn origin_key_from_url(raw: &str) -> Option<String> {
     let u = url::Url::parse(raw).ok()?;
     let host = u.host_str()?;
@@ -422,6 +436,8 @@ struct BrowserHost {
     demo_base_url: Option<String>,
     window: tao::window::Window,
     #[cfg(target_os = "linux")]
+    scrolled_container: gtk::ScrolledWindow,
+    #[cfg(target_os = "linux")]
     fixed_container: gtk::Fixed,
     event_proxy: EventLoopProxy<UserEvent>,
     normal_ctx: WebContext,
@@ -445,6 +461,8 @@ struct BrowserHost {
     density: String,
     toast: Option<String>,
     search_engine: String,
+    needs_search_onboarding: bool,
+    tips_on_startup: bool,
     last_pulse: Option<PulseViewData>,
     live_downloads: HashMap<String, LiveDownloadMeta>,
     resumable_controls: HashMap<String, Arc<DownloadControl>>,
@@ -737,6 +755,8 @@ impl BrowserHost {
                 &self.profile.record.name,
                 self.proxy.telemetry_snapshot().blocked_by_shield,
                 &eff_theme,
+                &self.search_engine,
+                self.tips_on_startup,
             );
             let _ = wv.load_html(&html);
         }
@@ -1043,55 +1063,106 @@ impl BrowserHost {
         self.sync_ui();
     }
 
+    fn default_home_url(&self) -> String {
+        self.demo_base_url
+            .as_ref()
+            .map(|b| format!("{}/home", b))
+            .unwrap_or_else(|| "about:home".into())
+    }
+
+    fn refresh_home_tabs(&self) {
+        let eff_theme = resolve_effective_theme(&self.theme_pref);
+        let blocked = self.proxy.telemetry_snapshot().blocked_by_shield;
+        let html = render_start_page_html(
+            &self.profile.record.name,
+            blocked,
+            &eff_theme,
+            &self.search_engine,
+            self.tips_on_startup,
+        );
+        for tab in &self.tabs {
+            if tab.url == "about:home" {
+                if let Some(wv) = &tab.wv {
+                    let _ = wv.load_html(&html);
+                }
+            }
+        }
+    }
+
     fn close_tab(&mut self, tab_id: &str) {
-        if self
+        let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) else {
+            return;
+        };
+        let target_space = self.tabs[idx].space_id.clone();
+        let removed_space_pos = self
+            .tabs
+            .iter()
+            .filter(|t| t.space_id == target_space)
+            .position(|t| t.id == tab_id)
+            .unwrap_or(0);
+
+        let mut removed = self.tabs.remove(idx);
+        if let Some(wv) = removed.wv.take() {
+            #[cfg(target_os = "linux")]
+            {
+                let gwv = wv.webview();
+                gwv.terminate_web_process();
+                self.fixed_container.remove(&gwv);
+            }
+            drop(wv);
+        }
+        let _ = self.profile.storage.delete_tab(&removed.id);
+
+        let remaining_in_space: Vec<String> = self
             .tabs
             .iter()
             .filter(|t| t.space_id == self.active_space_id)
-            .count()
-            <= 1
-        {
-            return;
-        }
-        if let Some(idx) = self.tabs.iter().position(|t| t.id == tab_id) {
-            let mut removed = self.tabs.remove(idx);
-            if let Some(wv) = removed.wv.take() {
-                #[cfg(target_os = "linux")]
-                {
-                    let gwv = wv.webview();
-                    gwv.terminate_web_process();
-                    self.fixed_container.remove(&gwv);
-                }
-                drop(wv);
-            }
-            let _ = self.profile.storage.delete_tab(&removed.id);
+            .map(|t| t.id.clone())
+            .collect();
+
+        if removed.url != "about:home" || !remaining_in_space.is_empty() {
             self.closed_tabs.push(ClosedTab {
                 space_id: removed.space_id,
                 url: removed.url,
                 title: removed.title,
                 is_incognito: removed.is_incognito,
             });
-            if self.left_tab_id.as_deref() == Some(tab_id) {
-                self.left_tab_id = self
-                    .tabs
-                    .iter()
-                    .find(|t| t.space_id == self.active_space_id)
-                    .map(|t| t.id.clone());
+        }
+
+        if !self.tabs.iter().any(|t| t.is_incognito) {
+            if let Some(priv_sess) = self.private_session.take() {
+                let _ = priv_sess.cleanup();
             }
-            if self.right_tab_id.as_deref() == Some(tab_id) {
-                self.right_tab_id = self
-                    .tabs
-                    .iter()
-                    .find(|t| Some(&t.id) != self.left_tab_id.as_ref())
-                    .map(|t| t.id.clone());
-                if self.right_tab_id.is_none() {
-                    self.split_active = false;
-                }
+        }
+
+        if remaining_in_space.is_empty() {
+            self.split_active = false;
+            self.right_tab_id = None;
+            self.left_tab_id = None;
+            self.focused_pane = "left".into();
+            let home_url = self.default_home_url();
+            self.open_new_tab(&home_url, false, true);
+            return;
+        }
+
+        if self.left_tab_id.as_deref() == Some(tab_id) {
+            if let Some(next_left) = pick_adjacent_tab_id(&remaining_in_space, removed_space_pos) {
+                self.left_tab_id = Some(next_left.clone());
+                self.restore_tab(&next_left);
             }
-            if !self.tabs.iter().any(|t| t.is_incognito) {
-                if let Some(priv_sess) = self.private_session.take() {
-                    let _ = priv_sess.cleanup();
-                }
+        }
+        if self.right_tab_id.as_deref() == Some(tab_id) {
+            let next_right = remaining_in_space
+                .iter()
+                .find(|id| Some((*id).as_str()) != self.left_tab_id.as_deref())
+                .cloned();
+            if let Some(ref rid) = next_right {
+                self.right_tab_id = Some(rid.clone());
+                self.restore_tab(rid);
+            } else {
+                self.right_tab_id = None;
+                self.split_active = false;
+                self.focused_pane = "left".into();
             }
         }
         self.relayout();
@@ -1348,6 +1419,9 @@ impl BrowserHost {
             downloads_count: downloads_list.len(),
             profile_name: self.profile.record.name.clone(),
             toast: self.toast.clone(),
+            search_engine: self.search_engine.clone(),
+            needs_search_onboarding: self.needs_search_onboarding,
+            tips_on_startup: self.tips_on_startup,
         };
 
         if let Ok(json) = serde_json::to_string(&snapshot) {
@@ -1380,6 +1454,7 @@ impl BrowserHost {
                 "notes": self.profile.storage.get_notes().unwrap_or_default(),
                 "last_pulse": self.last_pulse,
                 "search_engine": self.search_engine,
+                "tips_on_startup": self.tips_on_startup,
                 "profile_id": self.profile.record.id,
                 "profile_name": self.profile.record.name,
                 "profile_dir": self.profile.root_dir.to_string_lossy(),
@@ -1407,8 +1482,61 @@ impl BrowserHost {
                     .get("height")
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0) as i32;
-                self.chrome_overlay_h = h.clamp(0, 240);
+                self.chrome_overlay_h = h.clamp(0, 280);
                 self.relayout();
+            }
+            "complete_search_onboarding" => {
+                let se = msg
+                    .payload
+                    .get("engine")
+                    .and_then(|v| v.as_str())
+                    .map(normalize_search_engine)
+                    .unwrap_or("duckduckgo");
+                self.search_engine = se.to_string();
+                self.needs_search_onboarding = false;
+                self.chrome_overlay_h = 0;
+                let _ = self
+                    .profile
+                    .storage
+                    .set_setting("search_engine", &self.search_engine);
+                let _ = self
+                    .profile
+                    .storage
+                    .set_setting("search_engine_configured", "1");
+                self.set_toast(format!(
+                    "Moteur : {}",
+                    search_engine_label(&self.search_engine)
+                ));
+                self.refresh_home_tabs();
+                self.relayout();
+                self.sync_ui();
+            }
+            "set_tips_on_startup" => {
+                let enabled = msg
+                    .payload
+                    .get("enabled")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(true);
+                self.tips_on_startup = enabled;
+                let _ = self
+                    .profile
+                    .storage
+                    .set_setting("tips_on_startup", if enabled { "1" } else { "0" });
+                self.set_toast(if enabled {
+                    "Astuces affichées sur l'accueil"
+                } else {
+                    "Astuces masquées sur l'accueil"
+                });
+                self.refresh_home_tabs();
+                self.sync_ui();
+            }
+            "open_tips_overlay" => {
+                self.panel_open = false;
+                self.relayout();
+                let _ = self
+                    .chrome_wv
+                    .evaluate_script("window.openTipsOverlay && window.openTipsOverlay();");
+                self.sync_ui();
             }
             "query_omnibox" => {
                 let q = msg
@@ -1499,12 +1627,11 @@ impl BrowserHost {
                     .get("incognito")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
-                let url = self
-                    .demo_base_url
-                    .as_ref()
-                    .map(|b| format!("{}/home", b))
-                    .unwrap_or_else(|| "about:home".into());
+                let url = self.default_home_url();
                 self.open_new_tab(&url, incog, true);
+                let _ = self
+                    .chrome_wv
+                    .evaluate_script("window.focusOmnibox && window.focusOmnibox();");
             }
             "select_tab" => {
                 if let Some(id) = msg.payload.get("tab_id").and_then(|v| v.as_str()) {
@@ -1527,6 +1654,9 @@ impl BrowserHost {
             }
             "reopen_closed" => {
                 if let Some(c) = self.closed_tabs.pop() {
+                    let _ = self
+                        .chrome_wv
+                        .evaluate_script("window.closeOverlays && window.closeOverlays(); var oi=document.getElementById('urlInput'); if(oi) oi.blur();");
                     self.open_new_tab(&c.url, c.is_incognito, true);
                 }
             }
@@ -2001,11 +2131,21 @@ impl BrowserHost {
             }
             "set_search_engine" => {
                 if let Some(se) = msg.payload.get("engine").and_then(|v| v.as_str()) {
-                    self.search_engine = se.to_string();
+                    self.search_engine = normalize_search_engine(se).to_string();
+                    self.needs_search_onboarding = false;
                     let _ = self
                         .profile
                         .storage
                         .set_setting("search_engine", &self.search_engine);
+                    let _ = self
+                        .profile
+                        .storage
+                        .set_setting("search_engine_configured", "1");
+                    self.set_toast(format!(
+                        "Moteur : {}",
+                        search_engine_label(&self.search_engine)
+                    ));
+                    self.refresh_home_tabs();
                     self.sync_ui();
                 }
             }
@@ -2071,7 +2211,8 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let verify_mode = args.iter().any(|a| a == "--verify");
     let verify_phase5 = args.iter().any(|a| a == "--verify-phase5");
-    let any_verify = verify_mode || verify_phase5;
+    let verify_ux = args.iter().any(|a| a == "--verify-ux");
+    let any_verify = verify_mode || verify_phase5 || verify_ux;
     let bench_mode = args.iter().any(|a| a == "--bench");
     let cli_profile = args
         .windows(2)
@@ -2168,16 +2309,34 @@ fn main() {
     let window = WindowBuilder::new()
         .with_title("Orakle Browser V2")
         .with_inner_size(LogicalSize::new(1360.0, 860.0))
+        .with_min_inner_size(LogicalSize::new(520.0, 360.0))
+        .with_resizable(true)
         .build(&event_loop)
         .expect("create main window");
 
     #[cfg(target_os = "linux")]
-    let fixed_container = {
+    let (scrolled_container, fixed_container) = {
         let vbox = window.default_vbox().expect("GTK default vbox");
+        let sw = gtk::ScrolledWindow::new(gtk::Adjustment::NONE, gtk::Adjustment::NONE);
+        sw.set_policy(gtk::PolicyType::External, gtk::PolicyType::External);
+        sw.set_shadow_type(gtk::ShadowType::None);
+        sw.set_min_content_width(480);
+        sw.set_min_content_height(320);
         let fixed = gtk::Fixed::new();
-        vbox.pack_start(&fixed, true, true, 0);
-        fixed.show_all();
-        fixed
+        sw.add(&fixed);
+        vbox.pack_start(&sw, true, true, 0);
+        sw.show_all();
+        let alloc_proxy = event_proxy.clone();
+        let last_alloc = Rc::new(std::cell::Cell::new((0_i32, 0_i32)));
+        sw.connect_size_allocate(move |_, alloc| {
+            let w = alloc.width();
+            let h = alloc.height();
+            if w >= 120 && h >= 120 && last_alloc.get() != (w, h) {
+                last_alloc.set((w, h));
+                let _ = alloc_proxy.send_event(UserEvent::HostResized(w, h));
+            }
+        });
+        (sw, fixed)
     };
 
     #[allow(unused_mut)]
@@ -2253,7 +2412,22 @@ fn main() {
         .get_setting("search_engine")
         .ok()
         .flatten()
+        .map(|s| normalize_search_engine(&s).to_string())
         .unwrap_or_else(|| "duckduckgo".into());
+    let search_configured = profile
+        .storage
+        .get_setting("search_engine_configured")
+        .ok()
+        .flatten()
+        .is_some();
+    let needs_search_onboarding = (!any_verify && !search_configured) || verify_ux;
+    let tips_on_startup = profile
+        .storage
+        .get_setting("tips_on_startup")
+        .ok()
+        .flatten()
+        .as_deref()
+        != Some("0");
 
     let demo_base_url = demo_addr_opt.map(|d| format!("http://{}", d));
     let mut host = BrowserHost {
@@ -2273,6 +2447,8 @@ fn main() {
         allow_loopback_nav: demo_base_url.is_some(),
         demo_base_url: demo_base_url.clone(),
         window,
+        #[cfg(target_os = "linux")]
+        scrolled_container,
         #[cfg(target_os = "linux")]
         fixed_container,
         event_proxy: event_proxy.clone(),
@@ -2297,6 +2473,8 @@ fn main() {
         density: saved_density,
         toast: None,
         search_engine: saved_search,
+        needs_search_onboarding,
+        tips_on_startup,
         last_pulse: None,
         live_downloads: HashMap::new(),
         resumable_controls: HashMap::new(),
@@ -2319,10 +2497,14 @@ fn main() {
     };
 
     if restored_tabs.is_empty() {
-        let initial_url = demo_base_url
-            .as_ref()
-            .map(|b| format!("{}/home", b))
-            .unwrap_or_else(|| "about:home".into());
+        let initial_url = if verify_ux {
+            "about:home".into()
+        } else {
+            demo_base_url
+                .as_ref()
+                .map(|b| format!("{}/home", b))
+                .unwrap_or_else(|| "about:home".into())
+        };
         host.open_new_tab(&initial_url, false, true);
     } else {
         let last_idx = restored_tabs.len() - 1;
@@ -2388,6 +2570,15 @@ fn main() {
                 std::thread::sleep(Duration::from_millis(1600));
             }
         });
+    } else if verify_ux {
+        let vp = event_proxy.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(2200));
+            for step in 1..=6 {
+                let _ = vp.send_event(UserEvent::VerifyUxStep(step));
+                std::thread::sleep(Duration::from_millis(1600));
+            }
+        });
     }
 
     event_loop.run(move |event, _, control_flow| {
@@ -2410,9 +2601,51 @@ fn main() {
             } => {
                 let scale = host.window.scale_factor();
                 let logical = new_size.to_logical::<i32>(scale);
-                host.win_w = logical.width;
-                host.win_h = logical.height;
-                host.relayout();
+                #[cfg(target_os = "linux")]
+                let (w, h) = {
+                    let alloc = host.scrolled_container.allocation();
+                    if alloc.width() >= 120 && alloc.height() >= 120 {
+                        (alloc.width(), alloc.height())
+                    } else {
+                        (logical.width, logical.height)
+                    }
+                };
+                #[cfg(not(target_os = "linux"))]
+                let (w, h) = (logical.width, logical.height);
+                if w >= 120 && h >= 120 {
+                    host.win_w = w;
+                    host.win_h = h;
+                    #[cfg(target_os = "linux")]
+                    {
+                        host.scrolled_container.hadjustment().set_value(0.0);
+                        host.scrolled_container.vadjustment().set_value(0.0);
+                    }
+                    host.relayout();
+                }
+            }
+            Event::WindowEvent {
+                event: WindowEvent::ScaleFactorChanged { new_inner_size, .. },
+                ..
+            } => {
+                let scale = host.window.scale_factor();
+                let logical = new_inner_size.to_logical::<i32>(scale);
+                if logical.width >= 120 && logical.height >= 120 {
+                    host.win_w = logical.width;
+                    host.win_h = logical.height;
+                    host.relayout();
+                }
+            }
+            Event::UserEvent(UserEvent::HostResized(w, h)) => {
+                if w >= 120 && h >= 120 && (host.win_w != w || host.win_h != h) {
+                    host.win_w = w;
+                    host.win_h = h;
+                    #[cfg(target_os = "linux")]
+                    {
+                        host.scrolled_container.hadjustment().set_value(0.0);
+                        host.scrolled_container.vadjustment().set_value(0.0);
+                    }
+                    host.relayout();
+                }
             }
             Event::UserEvent(UserEvent::IpcCommand(raw)) => {
                 host.handle_ipc(&raw);
@@ -2422,7 +2655,11 @@ fn main() {
             }
             Event::UserEvent(UserEvent::WebTitleChanged { tab_id, title }) => {
                 if let Some(idx) = host.tabs.iter().position(|t| t.id == tab_id) {
-                    host.tabs[idx].title = title;
+                    if title.trim().is_empty() && host.tabs[idx].url == "about:home" {
+                        // Conserver le titre lisible d'accueil si WebKit émet un titre vide
+                    } else {
+                        host.tabs[idx].title = title;
+                    }
                     let snapshot = TabItem {
                         id: host.tabs[idx].id.clone(),
                         space_id: host.tabs[idx].space_id.clone(),
@@ -2902,7 +3139,142 @@ fn main() {
                     _ => {}
                 }
             }
+            Event::UserEvent(UserEvent::VerifyUxStep(step)) => {
+                let demo = host
+                    .demo_base_url
+                    .clone()
+                    .unwrap_or_else(|| "http://127.0.0.1:8080".into());
+                match step {
+                    1 => {
+                        assert!(host.needs_search_onboarding, "L'assistant moteur doit être actif au 1er lancement");
+                        assert!(host.chrome_overlay_h >= 120, "Overlay onboarding non ouvert (h={})", host.chrome_overlay_h);
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "ux-01-search-onboarding.png");
+                        }
+                        host.handle_ipc("{\"cmd\":\"complete_search_onboarding\",\"payload\":{\"engine\":\"qwant\"}}");
+                        assert_eq!(host.search_engine, "qwant");
+                        assert!(!host.needs_search_onboarding);
+                        assert_eq!(host.chrome_overlay_h, 0);
+                        assert_eq!(
+                            host.profile.storage.get_setting("search_engine").ok().flatten().as_deref(),
+                            Some("qwant")
+                        );
+                        assert_eq!(
+                            host.profile.storage.get_setting("search_engine_configured").ok().flatten().as_deref(),
+                            Some("1")
+                        );
+                        let (q_url, _) = resolve_omnibox_input("orakle rust", &host.search_engine);
+                        assert!(q_url.starts_with("https://www.qwant.com/"));
+                        println!("[UX STEP 1] Onboarding moteur Qwant validé -> {}", q_url);
+                    }
+                    2 => {
+                        host.handle_ipc("{\"cmd\":\"open_tips_overlay\",\"payload\":{}}");
+                        std::thread::sleep(Duration::from_millis(250));
+                        // Assurer hauteur overlay si JS asynchrone
+                        if host.chrome_overlay_h < 180 {
+                            host.chrome_overlay_h = 224;
+                            host.relayout();
+                        }
+                        println!("[UX STEP 2] Panneau Astuces ouvert (overlay_h={})", host.chrome_overlay_h);
+                    }
+                    3 => {
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "ux-02-tips-overlay.png");
+                        }
+                        let _ = host.chrome_wv.evaluate_script("window.closeOverlays && window.closeOverlays();");
+                        host.chrome_overlay_h = 0;
+                        host.relayout();
+
+                        let t0 = host.tabs[0].id.clone();
+                        host.handle_ipc("{\"cmd\":\"new_tab\",\"payload\":{\"incognito\":false}}");
+                        host.handle_ipc("{\"cmd\":\"new_tab\",\"payload\":{\"incognito\":false}}");
+                        assert_eq!(host.tabs.len(), 3);
+                        let t1 = host.tabs[1].id.clone();
+                        let t2 = host.tabs[2].id.clone();
+                        host.select_tab(&t1);
+                        host.close_tab(&t1);
+                        assert_eq!(host.tabs.len(), 2);
+                        assert_eq!(
+                            host.left_tab_id.as_deref(),
+                            Some(t2.as_str()),
+                            "Fermer l'onglet du milieu doit activer l'onglet adjacent"
+                        );
+                        host.close_tab(&t2);
+                        assert_eq!(host.left_tab_id.as_deref(), Some(t0.as_str()));
+
+                        let p2_url = format!("{}/page2", demo);
+                        host.navigate_tab_to(&t0, &p2_url);
+                        host.close_tab(&t0);
+                        assert_eq!(host.tabs.len(), 1, "Fermer le dernier onglet doit ouvrir un nouvel onglet propre");
+                        assert_ne!(host.tabs[0].id, t0);
+                        assert!(!host.closed_tabs.is_empty());
+
+                        host.handle_ipc("{\"cmd\":\"reopen_closed\",\"payload\":{}}");
+                        assert_eq!(host.tabs.len(), 2);
+                        println!("[UX STEP 3] Nouvel onglet + Fermeture adjacent + Fermeture dernier onglet + Réouverture validés");
+                    }
+                    4 => {
+                        host.window.set_maximized(true);
+                        host.window.set_inner_size(LogicalSize::new(1680.0, 960.0));
+                        println!("[UX STEP 4] Agrandissement / Maximisation fenêtre déclenché");
+                    }
+                    5 => {
+                        assert!(
+                            host.win_w >= 1450 && host.win_h >= 880,
+                            "La fenêtre maximisée/agrandie doit mettre à jour win_w/win_h ({}x{})",
+                            host.win_w,
+                            host.win_h
+                        );
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "ux-03-maximized.png");
+                        }
+                        println!("[UX STEP 5] Fenêtre agrandie mesurée : {}x{}", host.win_w, host.win_h);
+                        host.window.set_maximized(false);
+                        host.window.set_inner_size(LogicalSize::new(900.0, 580.0));
+                    }
+                    6 => {
+                        assert!(
+                            host.win_w <= 960 && host.win_h <= 640,
+                            "La fenêtre doit pouvoir rétrécir après maximisation sans verrou GTK ({}x{})",
+                            host.win_w,
+                            host.win_h
+                        );
+                        if let Some(d) = &capture_dir {
+                            capture_screenshot(d, "ux-04-shrunk.png");
+                        }
+                        println!(
+                            "[UX STEP 6 — BILAN UX OK] Fenêtre réduite mesurée : {}x{} | tabs={}",
+                            host.win_w,
+                            host.win_h,
+                            host.tabs.len()
+                        );
+                        if let Some(priv_sess) = host.private_session.take() {
+                            let _ = priv_sess.cleanup();
+                        }
+                        host.proxy.shutdown();
+                        *control_flow = ControlFlow::Exit;
+                    }
+                    _ => {}
+                }
+            }
             _ => {}
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pick_adjacent_tab_id;
+
+    #[test]
+    fn adjacent_tab_selection_on_close() {
+        let ids = vec!["t0".to_string(), "t2".to_string(), "t3".to_string()];
+        // Fermeture de l'ancien index 1 ('t1') -> choisit 't2' (nouvel index 1)
+        assert_eq!(pick_adjacent_tab_id(&ids, 1).as_deref(), Some("t2"));
+        // Fermeture du dernier index (pos 3) -> choisit le dernier restant ('t3')
+        assert_eq!(pick_adjacent_tab_id(&ids, 3).as_deref(), Some("t3"));
+        // Fermeture du premier -> choisit 't0'
+        assert_eq!(pick_adjacent_tab_id(&ids, 0).as_deref(), Some("t0"));
+        assert_eq!(pick_adjacent_tab_id(&[], 0), None);
+    }
 }

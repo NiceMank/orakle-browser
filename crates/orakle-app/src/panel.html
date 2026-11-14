@@ -480,9 +480,16 @@
           <strong>Moteur de recherche par défaut</strong>
           <select id="searchEngineSel">
             <option value="duckduckgo" ${snap.search_engine === 'duckduckgo' ? 'selected' : ''}>DuckDuckGo</option>
-            <option value="startpage" ${snap.search_engine === 'startpage' ? 'selected' : ''}>Startpage</option>
             <option value="qwant" ${snap.search_engine === 'qwant' ? 'selected' : ''}>Qwant</option>
+            <option value="startpage" ${snap.search_engine === 'startpage' ? 'selected' : ''}>Startpage</option>
+            <option value="brave" ${snap.search_engine === 'brave' ? 'selected' : ''}>Brave Search</option>
+            <option value="ecosia" ${snap.search_engine === 'ecosia' ? 'selected' : ''}>Ecosia</option>
           </select>
+          <div class="row" style="margin-top:4px;">
+            <span class="muted">Afficher les astuces</span>
+            <button class="btn ${snap.tips_on_startup !== false ? 'primary' : ''}" id="toggleTipsBtn">${snap.tips_on_startup !== false ? 'Activé' : 'Désactivé'}</button>
+          </div>
+          <button class="btn" id="openTipsBtn">Ouvrir le panneau d'astuces</button>
         </div>
 
         <div class="section-box">
@@ -514,6 +521,12 @@
       `;
       document.getElementById("searchEngineSel").onchange = (e) => {
         postCmd("set_search_engine", { engine: e.target.value });
+      };
+      document.getElementById("toggleTipsBtn").onclick = () => {
+        postCmd("set_tips_on_startup", { enabled: !(snap.tips_on_startup !== false) });
+      };
+      document.getElementById("openTipsBtn").onclick = () => {
+        postCmd("open_tips_overlay", {});
       };
       document.getElementById("createProfileBtn").onclick = () => {
         const name = document.getElementById("newProfileInput").value.trim();

@@ -353,6 +353,83 @@
     flex-wrap: wrap;
     padding: 4px 0;
   }
+  .strip-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 6px 2px;
+  }
+  .strip-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .strip-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .strip-sub { font-size: 11.5px; color: var(--text-muted); }
+  .engine-chips {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 8px;
+  }
+  .engine-chip {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    text-align: left;
+    transition: border-color .14s ease, background .14s ease;
+  }
+  .engine-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
+  .engine-chip.selected { border-color: var(--accent); background: var(--accent-soft); }
+  .engine-chip strong { font-size: 12px; color: var(--text); }
+  .engine-chip span { font-size: 10.5px; color: var(--text-muted); }
+  .tips-strip-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 7px 10px;
+  }
+  @media (max-width: 780px) {
+    .tips-strip-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  .tip-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11.5px;
+    color: var(--text-muted);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 6px 9px;
+  }
+  .tip-item kbd {
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    font-size: 10.5px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 1px 6px;
+    color: var(--text);
+    white-space: nowrap;
+  }
+  .strip-footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 11.5px;
+    color: var(--text-muted);
+  }
+  .strip-footer label { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; }
 
   .toast-pill {
     display: none;
@@ -414,6 +491,10 @@
       <button type="button" class="pill-btn" id="btnDownloads" title="Téléchargements" aria-label="Téléchargements" style="padding:0 7px;">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         <span class="dl-badge" id="dlBadge" style="display:none;">0</span>
+      </button>
+      <button type="button" class="pill-btn" id="btnTips" title="Astuces & raccourcis (F1)" aria-label="Astuces et raccourcis">
+        <svg width="13.5" height="13.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        Astuces
       </button>
       <button type="button" class="icon-btn" id="btnPanel" title="Panneau latéral (Alt+P)" aria-label="Panneau latéral">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="15" y1="3" x2="15" y2="21"/></svg>
@@ -488,13 +569,23 @@
       shield_enabled: true, shield_blocked: 0, proxy_running: true,
       can_go_back: false, can_go_forward: false, closed_count: 0,
       downloads_count: 0, profile_name: "Profil Principal", toast: null,
+      search_engine: "duckduckgo", needs_search_onboarding: false, tips_on_startup: true,
     };
     let tabFilter = "";
     let dragTabId = null;
     let suggestions = [];
     let selectedSugg = -1;
-    let overlayMode = null; // "omnibox" | "tabctx"
+    let overlayMode = null; // "omnibox" | "tabctx" | "onboarding" | "tips"
     let ctxTab = null;
+    let onboardingShownOnce = false;
+
+    const SEARCH_ENGINES = [
+      { id: "duckduckgo", name: "DuckDuckGo", desc: "Confidentialité sans suivi" },
+      { id: "qwant", name: "Qwant", desc: "Moteur européen privé" },
+      { id: "startpage", name: "Startpage", desc: "Résultats sans profilage" },
+      { id: "brave", name: "Brave Search", desc: "Index web indépendant" },
+      { id: "ecosia", name: "Ecosia", desc: "Recherche écologique" },
+    ];
 
     function postCmd(cmd, payload) {
       if (window.ipc && typeof window.ipc.postMessage === "function") {
@@ -506,6 +597,8 @@
       overlayMode = mode;
       const strip = document.getElementById("overlayStrip");
       strip.classList.toggle("active", !!mode);
+      const btnTips = document.getElementById("btnTips");
+      if (btnTips) btnTips.classList.toggle("active", mode === "tips");
       if (!mode) strip.innerHTML = "";
       postCmd("set_chrome_overlay", { height: mode ? heightPx : 0 });
     }
@@ -516,6 +609,144 @@
       ctxTab = null;
       if (overlayMode) setOverlay(null, 0);
     }
+
+    window.closeOverlays = closeOverlays;
+
+    let skipNextFocusPopup = false;
+
+    window.focusOmnibox = () => {
+      const inp = document.getElementById("urlInput");
+      if (inp) {
+        skipNextFocusPopup = true;
+        inp.focus();
+        inp.select();
+      }
+    };
+
+    function openSearchOnboarding() {
+      setOverlay("onboarding", 156);
+      const strip = document.getElementById("overlayStrip");
+      strip.innerHTML = "";
+      const panel = document.createElement("div");
+      panel.className = "strip-panel";
+
+      const hdr = document.createElement("div");
+      hdr.className = "strip-header";
+      const left = document.createElement("div");
+      const title = document.createElement("div");
+      title.className = "strip-title";
+      title.textContent = "Bienvenue sur Orakle Browser V2 — Choisissez votre moteur de recherche";
+      const sub = document.createElement("div");
+      sub.className = "strip-sub";
+      sub.textContent = "Ce choix s'applique immédiatement à la barre d'adresse et reste modifiable dans Paramètres.";
+      left.append(title, sub);
+      const skipBtn = document.createElement("button");
+      skipBtn.type = "button";
+      skipBtn.className = "mini-btn";
+      skipBtn.textContent = "Garder " + ((SEARCH_ENGINES.find((e) => e.id === state.search_engine) || SEARCH_ENGINES[0]).name);
+      skipBtn.onclick = () => {
+        closeOverlays();
+        postCmd("complete_search_onboarding", { engine: state.search_engine || "duckduckgo" });
+      };
+      hdr.append(left, skipBtn);
+
+      const grid = document.createElement("div");
+      grid.className = "engine-chips";
+      for (const eng of SEARCH_ENGINES) {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "engine-chip" + (state.search_engine === eng.id ? " selected" : "");
+        chip.setAttribute("data-engine", eng.id);
+        const st = document.createElement("strong");
+        st.textContent = eng.name;
+        const sp = document.createElement("span");
+        sp.textContent = eng.desc;
+        chip.append(st, sp);
+        chip.onclick = () => {
+          closeOverlays();
+          postCmd("complete_search_onboarding", { engine: eng.id });
+        };
+        grid.appendChild(chip);
+      }
+
+      panel.append(hdr, grid);
+      strip.appendChild(panel);
+    }
+
+    window.openSearchOnboarding = openSearchOnboarding;
+
+    function openTipsOverlay() {
+      if (overlayMode === "tips") {
+        closeOverlays();
+        return;
+      }
+      setOverlay("tips", 196);
+      const strip = document.getElementById("overlayStrip");
+      strip.innerHTML = "";
+      const panel = document.createElement("div");
+      panel.className = "strip-panel";
+
+      const hdr = document.createElement("div");
+      hdr.className = "strip-header";
+      const title = document.createElement("div");
+      title.className = "strip-title";
+      title.textContent = "Astuces & Raccourcis Orakle Browser V2";
+      const actions = document.createElement("div");
+      actions.style.display = "flex";
+      actions.style.gap = "6px";
+      const engBtn = document.createElement("button");
+      engBtn.type = "button";
+      engBtn.className = "mini-btn";
+      engBtn.textContent = "Moteur de recherche (" + ((SEARCH_ENGINES.find((e) => e.id === state.search_engine) || SEARCH_ENGINES[0]).name) + ")";
+      engBtn.onclick = () => openSearchOnboarding();
+      const closeBtn = document.createElement("button");
+      closeBtn.type = "button";
+      closeBtn.className = "mini-btn";
+      closeBtn.textContent = "Fermer (Échap)";
+      closeBtn.onclick = () => closeOverlays();
+      actions.append(engBtn, closeBtn);
+      hdr.append(title, actions);
+
+      const tips = [
+        ["Ctrl+T", "Nouvel onglet (barre d'adresse prête)"],
+        ["Ctrl+W / Molette", "Fermer l'onglet actif ou sous le curseur"],
+        ["Ctrl+Shift+T", "Rouvrir le dernier onglet fermé"],
+        ["!gh · !w · !mdn", "Bangs rapides dans la barre d'adresse"],
+        ["Split / Ctrl+\\", "Ouvrir deux sites côte à côte et basculer"],
+        ["Clic droit onglet", "Épingler, dupliquer, mettre en veille, Split"],
+      ];
+      const grid = document.createElement("div");
+      grid.className = "tips-strip-grid";
+      for (const [k, desc] of tips) {
+        const item = document.createElement("div");
+        item.className = "tip-item";
+        const kbd = document.createElement("kbd");
+        kbd.textContent = k;
+        const txt = document.createElement("span");
+        txt.textContent = desc;
+        item.append(kbd, txt);
+        grid.appendChild(item);
+      }
+
+      const footer = document.createElement("div");
+      footer.className = "strip-footer";
+      const lbl = document.createElement("label");
+      const chk = document.createElement("input");
+      chk.type = "checkbox";
+      chk.checked = state.tips_on_startup !== false;
+      chk.onchange = () => {
+        postCmd("set_tips_on_startup", { enabled: chk.checked });
+      };
+      lbl.append(chk, document.createTextNode(" Afficher les astuces sur la page d'accueil"));
+      const hint = document.createElement("span");
+      hint.textContent = "Raccourci : F1 · Double filtrage Shield actif";
+      footer.append(lbl, hint);
+
+      panel.append(hdr, grid, footer);
+      strip.appendChild(panel);
+    }
+
+    window.openTipsOverlay = openTipsOverlay;
 
     function applySuggAction(s) {
       if (!s) return;
@@ -606,6 +837,10 @@
     const urlInput = document.getElementById("urlInput");
     urlInput.addEventListener("focus", () => {
       urlInput.select();
+      if (skipNextFocusPopup) {
+        skipNextFocusPopup = false;
+        return;
+      }
       postCmd("query_omnibox", { query: urlInput.value });
     });
     urlInput.addEventListener("input", () => {
@@ -647,11 +882,15 @@
     document.getElementById("btnSplit").addEventListener("click", () => postCmd("toggle_split", {}));
     document.getElementById("btnShield").addEventListener("click", () => postCmd("open_panel", { section: "shield" }));
     document.getElementById("btnDownloads").addEventListener("click", () => postCmd("open_panel", { section: "downloads" }));
+    document.getElementById("btnTips").addEventListener("click", () => openTipsOverlay());
     document.getElementById("btnPanel").addEventListener("click", () => postCmd("toggle_panel", {}));
     document.getElementById("btnSettings").addEventListener("click", () => postCmd("open_panel", { section: "settings" }));
     document.getElementById("btnSpace").addEventListener("click", () => postCmd("open_panel", { section: "spaces" }));
     document.getElementById("btnProfile").addEventListener("click", () => postCmd("open_panel", { section: "settings" }));
-    document.getElementById("btnNewTab").addEventListener("click", () => postCmd("new_tab", { incognito: false }));
+    document.getElementById("btnNewTab").addEventListener("click", () => {
+      postCmd("new_tab", { incognito: false });
+      urlInput.focus();
+    });
     document.getElementById("btnNewPrivate").addEventListener("click", () => postCmd("new_tab", { incognito: true }));
     document.getElementById("btnReopen").addEventListener("click", () => postCmd("reopen_closed", {}));
     document.getElementById("btnRestartProxy").addEventListener("click", () => postCmd("restart_proxy", {}));
@@ -671,8 +910,10 @@
     document.getElementById("btnCloseRight").addEventListener("click", () => postCmd("toggle_split", {}));
 
     document.addEventListener("keydown", (e) => {
-      if (e.ctrlKey && e.key.toLowerCase() === "t" && !e.shiftKey) {
-        e.preventDefault(); postCmd("new_tab", { incognito: false });
+      if (e.key === "F1") {
+        e.preventDefault(); openTipsOverlay();
+      } else if (e.ctrlKey && e.key.toLowerCase() === "t" && !e.shiftKey) {
+        e.preventDefault(); postCmd("new_tab", { incognito: false }); urlInput.focus();
       } else if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "t") {
         e.preventDefault(); postCmd("reopen_closed", {});
       } else if (e.ctrlKey && e.key.toLowerCase() === "l") {
@@ -739,6 +980,18 @@
             postCmd("assign_right_tab", { tab_id: tab.id });
           } else {
             postCmd("select_tab", { tab_id: tab.id });
+          }
+        });
+        el.addEventListener("mousedown", (ev) => {
+          if (ev.button === 1 && !tab.is_pinned) {
+            ev.preventDefault();
+          }
+        });
+        el.addEventListener("auxclick", (ev) => {
+          if (ev.button === 1 && !tab.is_pinned) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            postCmd("close_tab", { tab_id: tab.id });
           }
         });
         el.addEventListener("contextmenu", (ev) => {
@@ -810,7 +1063,14 @@
       const focusedId = state.split_active && state.focused_pane === "right" ? state.right_tab_id : state.left_tab_id;
       const focusedTab = state.tabs.find((t) => t.id === focusedId);
       if (focusedTab && document.activeElement !== urlInput) {
-        urlInput.value = focusedTab.url || "";
+        urlInput.value = focusedTab.url === "about:home" ? "" : (focusedTab.url || "");
+      }
+
+      if (state.needs_search_onboarding && !onboardingShownOnce && overlayMode !== "onboarding") {
+        onboardingShownOnce = true;
+        openSearchOnboarding();
+      } else if (!state.needs_search_onboarding && overlayMode === "onboarding") {
+        closeOverlays();
       }
 
       const secBadge = document.getElementById("secBadge");

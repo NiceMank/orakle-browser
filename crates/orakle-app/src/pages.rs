@@ -138,9 +138,35 @@ pub fn render_error_page_html(kind: ErrorPageKind, raw_url: &str) -> String {
     )
 }
 
-pub fn render_start_page_html(profile_name: &str, blocked_count: u64, theme: &str) -> String {
+pub fn search_engine_label(search_engine: &str) -> &'static str {
+    match search_engine {
+        "startpage" => "Startpage",
+        "qwant" => "Qwant",
+        "brave" => "Brave Search",
+        "ecosia" => "Ecosia",
+        _ => "DuckDuckGo",
+    }
+}
+
+pub fn normalize_search_engine(raw: &str) -> &'static str {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "startpage" => "startpage",
+        "qwant" => "qwant",
+        "brave" => "brave",
+        "ecosia" => "ecosia",
+        _ => "duckduckgo",
+    }
+}
+
+pub fn render_start_page_html(
+    profile_name: &str,
+    blocked_count: u64,
+    theme: &str,
+    search_engine: &str,
+    show_tips: bool,
+) -> String {
     let is_light = theme == "light";
-    let (bg, surface, border, text, muted, accent) = if is_light {
+    let (bg, surface, border, text, muted, accent, kbd_bg) = if is_light {
         (
             "#f3f5f8",
             "#ffffff",
@@ -148,6 +174,7 @@ pub fn render_start_page_html(profile_name: &str, blocked_count: u64, theme: &st
             "#1f2328",
             "#59636e",
             "#0969da",
+            "#eef2f6",
         )
     } else {
         (
@@ -156,36 +183,74 @@ pub fn render_start_page_html(profile_name: &str, blocked_count: u64, theme: &st
             "rgba(240,246,252,.10)",
             "#f0f6fc",
             "#8b949e",
-            "#0969da",
+            "#58a6ff",
+            "#21262d",
         )
     };
     let pname = html_escape(profile_name);
+    let engine_label = search_engine_label(search_engine);
+    let tips_section = if show_tips {
+        format!(
+            r#"<section class="tips-box" aria-label="Astuces rapides Orakle">
+    <div class="tips-head">
+      <h2>Astuces &amp; Raccourcis</h2>
+      <span class="pill-small">Cliquez sur <strong>? Astuces</strong> en haut pour tout afficher</span>
+    </div>
+    <div class="tips-grid">
+      <div class="tip"><kbd>Ctrl+T</kbd><span>Nouvel onglet</span></div>
+      <div class="tip"><kbd>Ctrl+W</kbd><span>Fermer l'onglet (ou clic molette)</span></div>
+      <div class="tip"><kbd>Ctrl+Shift+T</kbd><span>Rouvrir le dernier onglet fermé</span></div>
+      <div class="tip"><kbd>Ctrl+L</kbd><span>Saisir une URL ou recherche ({engine_label})</span></div>
+      <div class="tip"><kbd>Ctrl+\</kbd><span>Basculer de volet en Split View</span></div>
+      <div class="tip"><kbd>Alt+← / →</kbd><span>Précédent / Suivant</span></div>
+      <div class="tip"><kbd>F1</kbd><span>Afficher / masquer toutes les astuces</span></div>
+      <div class="tip"><kbd>Clic droit onglet</kbd><span>Épingler, dupliquer, suspendre, Split</span></div>
+    </div>
+  </section>"#
+        )
+    } else {
+        String::new()
+    };
+
     format!(
-        r#"<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Accueil Orakle V2</title>
+        r#"<!doctype html><html lang="fr"><head><meta charset="utf-8"><title>Nouvel onglet — Orakle</title>
 <style>
-  body {{ margin:0; min-height:100vh; background:{bg}; color:{text}; font-family:-apple-system,BlinkMacSystemFont,"Plus Jakarta Sans","Inter",sans-serif; padding:44px 28px; }}
-  .wrap {{ max-width:780px; margin:0 auto; }}
-  .head {{ display:flex; align-items:center; justify-content:space-between; margin-bottom:24px; }}
+  body {{ margin:0; min-height:100vh; background:{bg}; color:{text}; font-family:-apple-system,BlinkMacSystemFont,"Plus Jakarta Sans","Inter",sans-serif; padding:40px 28px; box-sizing:border-box; }}
+  .wrap {{ max-width:840px; margin:0 auto; }}
+  .head {{ display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:22px; }}
   h1 {{ font-size:22px; font-weight:600; margin:0; letter-spacing:-0.01em; }}
+  .pills {{ display:flex; gap:8px; flex-wrap:wrap; }}
   .pill {{ font-size:12px; padding:5px 11px; border-radius:999px; background:{surface}; border:1px solid {border}; color:{muted}; }}
-  .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:12px; margin-top:18px; }}
+  .pill strong {{ color:{text}; font-weight:600; }}
+  .grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(230px,1fr)); gap:12px; margin-top:16px; }}
   .card {{ background:{surface}; border:1px solid {border}; border-radius:10px; padding:16px; }}
   .card h2 {{ font-size:14px; font-weight:600; margin:0 0 6px; }}
   .card p {{ font-size:12.5px; color:{muted}; margin:0 0 10px; line-height:1.5; }}
   a {{ color:{accent}; text-decoration:none; font-size:12.5px; font-weight:500; }}
   a:hover {{ text-decoration:underline; }}
-  code {{ font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11.5px; background:{bg}; padding:2px 6px; border-radius:4px; }}
+  code {{ font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11.5px; background:{kbd_bg}; padding:2px 6px; border-radius:4px; color:{text}; }}
+  .tips-box {{ margin-top:18px; background:{surface}; border:1px solid {border}; border-radius:10px; padding:16px 18px; }}
+  .tips-head {{ display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; margin-bottom:12px; }}
+  .tips-head h2 {{ font-size:14px; font-weight:600; margin:0; }}
+  .pill-small {{ font-size:11.5px; color:{muted}; }}
+  .tips-grid {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:8px 14px; }}
+  .tip {{ display:flex; align-items:center; gap:9px; font-size:12.5px; color:{muted}; }}
+  kbd {{ font-family:"JetBrains Mono",ui-monospace,monospace; font-size:11px; background:{kbd_bg}; border:1px solid {border}; border-radius:5px; padding:2px 7px; color:{text}; white-space:nowrap; }}
 </style></head>
 <body><main class="wrap">
   <div class="head">
     <div><h1>Orakle Browser V2</h1><p style="color:{muted};margin:6px 0 0;font-size:13px;">Profil actif : <strong>{pname}</strong></p></div>
-    <span class="pill">Shield actif · {blocked_count} blocage(s)</span>
+    <div class="pills">
+      <span class="pill">Moteur : <strong>{engine_label}</strong></span>
+      <span class="pill">Shield actif · <strong>{blocked_count}</strong> blocage(s)</span>
+    </div>
   </div>
   <div class="grid">
     <section class="card"><h2>Raccourcis Omnibox (Bangs)</h2><p>Saisissez <code>!gh</code>, <code>!w</code>, <code>!mdn</code>, <code>!yt</code> ou <code>!ddg</code> suivi de votre recherche.</p></section>
     <section class="card"><h2>Développement Local</h2><p>Tapez <code>localhost:3000</code> ou <code>127.0.0.1:8080</code> dans la barre d'adresse. Les pages externes restent bloquées (SSRF).</p></section>
     <section class="card"><h2>Accès rapide HTTPS</h2><p><a href="https://doc.rust-lang.org/std/">Documentation Rust</a> · <a href="https://developer.mozilla.org/fr/">MDN Web Docs</a></p></section>
   </div>
+  {tips_section}
 </main></body></html>"#
     )
 }
@@ -247,6 +312,8 @@ pub fn resolve_omnibox_input(raw: &str, search_engine: &str) -> (String, Option<
         let url = match search_engine {
             "startpage" => format!("https://www.startpage.com/do/search?q={}", encoded),
             "qwant" => format!("https://www.qwant.com/?q={}", encoded),
+            "brave" => format!("https://search.brave.com/search?q={}", encoded),
+            "ecosia" => format!("https://www.ecosia.org/search?q={}", encoded),
             _ => format!("https://duckduckgo.com/?q={}", encoded),
         };
         return (url, None);
@@ -392,4 +459,35 @@ pub fn build_omnibox_suggestions(
     }
 
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_search_engines_all_supported() {
+        let (ddg, _) = resolve_omnibox_input("rust gtk3", "duckduckgo");
+        assert_eq!(ddg, "https://duckduckgo.com/?q=rust+gtk3");
+        let (qw, _) = resolve_omnibox_input("rust gtk3", "qwant");
+        assert_eq!(qw, "https://www.qwant.com/?q=rust+gtk3");
+        let (sp, _) = resolve_omnibox_input("rust gtk3", "startpage");
+        assert_eq!(sp, "https://www.startpage.com/do/search?q=rust+gtk3");
+        let (br, _) = resolve_omnibox_input("rust gtk3", "brave");
+        assert_eq!(br, "https://search.brave.com/search?q=rust+gtk3");
+        let (ec, _) = resolve_omnibox_input("rust gtk3", "ecosia");
+        assert_eq!(ec, "https://www.ecosia.org/search?q=rust+gtk3");
+    }
+
+    #[test]
+    fn normalize_and_render_start_page_with_tips() {
+        assert_eq!(normalize_search_engine("Brave"), "brave");
+        assert_eq!(normalize_search_engine("invalid"), "duckduckgo");
+        let with_tips = render_start_page_html("Farel", 42, "dark", "qwant", true);
+        assert!(with_tips.contains("Moteur : <strong>Qwant</strong>"));
+        assert!(with_tips.contains("Astuces &amp; Raccourcis"));
+        let without_tips = render_start_page_html("Farel", 0, "light", "ecosia", false);
+        assert!(without_tips.contains("Ecosia"));
+        assert!(!without_tips.contains("Astuces &amp; Raccourcis"));
+    }
 }
